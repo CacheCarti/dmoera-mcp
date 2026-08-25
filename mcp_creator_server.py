@@ -908,23 +908,32 @@ if __name__ == "__main__":
             "http://127.0.0.1:*",
             "http://localhost:*",
         ]
-        # Add middleware to read DMOERA_API_KEY from the HTTP header on each
+        # Wrap the ASGI app to read DMOERA_API_KEY from the HTTP header on each
         # request (Smithery and other hosted clients pass it as a header).
         # We can't use mcp.run() because it creates a new app internally —
-        # instead we get the app, add middleware, and run uvicorn directly.
-        from starlette.middleware.base import BaseHTTPMiddleware
+        # instead we get the app, wrap it, and run uvicorn directly.
         import uvicorn
+        import anyio
 
-        class ApiKeyHeaderMiddleware(BaseHTTPMiddleware):
-            async def dispatch(self, request, call_next):
-                key = request.headers.get("DMOERA_API_KEY")
-                if key:
-                    _API_KEY_CTX.set(key)
-                    print(f"[MCP] API key set from header: {key[:16]}...")
-                return await call_next(request)
+        starlette_app = mcp.streamable_http_app()
 
-        app = mcp.streamable_http_app()
-        app.add_middleware(ApiKeyHeaderMiddleware)
+        # ASGI middleware wrapper — intercepts the raw ASGI scope to read headers
+        # before the MCP server processes the request.
+        class ApiKeyASGIMiddleware:
+            def __init__(self, app):
+                self.app = app
+
+            async def __call__(self, scope, receive, send):
+                if scope["type"] == "http":
+                    for name, value in scope.get("headers", []):
+                        if name == b"dmoera_api_key":
+                            key = value.decode("utf-8")
+                            _API_KEY_CTX.set(key)
+                            print(f"[MCP] API key from header: {key[:16]}...")
+                            break
+                await self.app(scope, receive, send)
+
+        app = ApiKeyASGIMiddleware(starlette_app)
         config = uvicorn.Config(
             app,
             host=host,
@@ -932,7 +941,6 @@ if __name__ == "__main__":
             log_level=mcp.settings.log_level.lower(),
         )
         server = uvicorn.Server(config)
-        import anyio
         anyio.run(server.serve)
     else:
         mcp.run()
