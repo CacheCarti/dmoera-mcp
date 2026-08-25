@@ -869,4 +869,14 @@ class MyStrategy(Strategy):
 
 
 if __name__ == "__main__":
-    mcp.run()
+    import sys
+    # Default to stdio (for local AI clients like Claude, Cursor, Windsurf).
+    # Use "python mcp_creator_server.py http" to run as a hosted HTTP server
+    # (for Smithery and other remote directories).
+    transport = sys.argv[1] if len(sys.argv) > 1 else "stdio"
+    if transport in ("http", "streamable-http"):
+        port = int(os.environ.get("MCP_PORT", "8787"))
+        mcp.settings.port = port
+        mcp.run(transport="streamable-http")
+    else:
+        mcp.run()
