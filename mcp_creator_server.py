@@ -62,8 +62,10 @@ mcp = FastMCP(
 )
 
 
-def _get_api_key() -> str:
-    """Get the API key from the HTTP header (hosted mode) or env var (stdio mode)."""
+def _resolve_api_key(explicit_key: str = "") -> str:
+    """Resolve the API key: explicit param > HTTP header > env var."""
+    if explicit_key:
+        return explicit_key
     header_key = _API_KEY_CTX.get()
     if header_key:
         return header_key
@@ -71,11 +73,11 @@ def _get_api_key() -> str:
 
 
 # ── HTTP helper ──────────────────────────────────────────
-def _api_get(path: str) -> dict:
+def _api_get(path: str, api_key: str = "") -> dict:
     """Make a GET request to the dMoERA API."""
     url = f"{API_URL}{path}"
     req = urllib.request.Request(url)
-    key = _get_api_key()
+    key = _resolve_api_key(api_key)
     if key:
         req.add_header("Authorization", f"Bearer {key}")
     try:
@@ -90,13 +92,13 @@ def _api_get(path: str) -> dict:
         return {"error": str(e)}
 
 
-def _api_post(path: str, body: dict) -> dict:
+def _api_post(path: str, body: dict, api_key: str = "") -> dict:
     """Make a POST request to the dMoERA API."""
     url = f"{API_URL}{path}"
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
-    key = _get_api_key()
+    key = _resolve_api_key(api_key)
     if key:
         req.add_header("Authorization", f"Bearer {key}")
     try:
@@ -279,6 +281,7 @@ def sandbox_backtest(
     code: str,
     domain: str = "eth_usdc",
     user_id: str = "mcp_sandbox",
+    api_key: str = "",
 ) -> str:
     """Run a sandbox backtest of strategy code without persisting anything.
 
@@ -292,6 +295,9 @@ def sandbox_backtest(
               with an on_bar(ctx) -> Signal method. See the strategy template resource.
         domain: Trading domain (e.g. "eth_usdc", "btc_usdc", "sol_usdc").
         user_id: Identifier for the creator (requires authentication for this endpoint).
+        api_key: Your dMoERA Personal Access Token. Required for this tool.
+                 Get one at https://dmoera.xyz → Settings → API Keys.
+                 (If running locally with DMOERA_API_KEY env var set, this can be omitted.)
 
     Returns JSON with: success, metrics (sharpe, sortino, win_rate,
     total_trades, return_bps, max_drawdown, regime_breakdown),
@@ -300,7 +306,7 @@ def sandbox_backtest(
     result = _api_post("/api/creator/sandbox", {
         "code": code,
         "domain": domain,
-    })
+    }, api_key=api_key)
     return json.dumps(result, indent=2, default=str)
 
 
@@ -311,6 +317,7 @@ def submit_strategy(
     code: str,
     user_id: str,
     symbol: str = "ETHUSDT",
+    api_key: str = "",
 ) -> str:
     """Submit a strategy for full validation and live deployment.
 
@@ -333,6 +340,9 @@ def submit_strategy(
         code: Python source code implementing the Strategy contract.
         user_id: The creator's user ID (authentication required).
         symbol: Price symbol (auto-detected from domain if omitted).
+        api_key: Your dMoERA Personal Access Token. Required for this tool.
+                 Get one at https://dmoera.xyz → Settings → API Keys.
+                 (If running locally with DMOERA_API_KEY env var set, this can be omitted.)
 
     Returns JSON with: success, strategy_id, bot_id, validation results
     per stage, or error details.
@@ -342,21 +352,24 @@ def submit_strategy(
         "domain": domain,
         "code": code,
         "symbol": symbol,
-    })
+    }, api_key=api_key)
     return json.dumps(result, indent=2, default=str)
 
 
 @mcp.tool()
-def list_strategies(user_id: str) -> str:
+def list_strategies(user_id: str, api_key: str = "") -> str:
     """List all strategies created by a user.
 
     Args:
         user_id: The creator's user ID (authentication required).
+        api_key: Your dMoERA Personal Access Token. Required for this tool.
+                 Get one at https://dmoera.xyz → Settings → API Keys.
+                 (If running locally with DMOERA_API_KEY env var set, this can be omitted.)
 
     Returns JSON array of strategies with: id, bot_id, name, domain,
     status, and created_at.
     """
-    return json.dumps(_api_get("/api/creator/strategies"), indent=2, default=str)
+    return json.dumps(_api_get("/api/creator/strategies", api_key=api_key), indent=2, default=str)
 
 
 @mcp.tool()
@@ -418,7 +431,7 @@ def get_tournament_status() -> str:
 
 
 @mcp.tool()
-def open_source_strategy(strategy_id: int) -> str:
+def open_source_strategy(strategy_id: int, api_key: str = "") -> str:
     """Convert a rejected strategy to open-source status.
 
     The strategy must have passed stages 1-2 (static check + in-sample with
@@ -432,15 +445,18 @@ def open_source_strategy(strategy_id: int) -> str:
     Args:
         strategy_id: The ID of the strategy to open-source (from submit_strategy
                      or list_strategies).
+        api_key: Your dMoERA Personal Access Token. Required for this tool.
+                 Get one at https://dmoera.xyz → Settings → API Keys.
+                 (If running locally with DMOERA_API_KEY env var set, this can be omitted.)
 
     Returns JSON with: success, strategy_id, status, bot_id, or error.
     """
-    result = _api_post(f"/api/creator/strategies/{strategy_id}/open-source", {})
+    result = _api_post(f"/api/creator/strategies/{strategy_id}/open-source", {}, api_key=api_key)
     return json.dumps(result, indent=2, default=str)
 
 
 @mcp.tool()
-def fork_strategy(strategy_id: int) -> str:
+def fork_strategy(strategy_id: int, api_key: str = "") -> str:
     """Get the source code from an open-source strategy for forking.
 
     Returns the full code + parent info. Use this to study and remix
@@ -451,11 +467,14 @@ def fork_strategy(strategy_id: int) -> str:
 
     Args:
         strategy_id: The ID of the open-source strategy to fork.
+        api_key: Your dMoERA Personal Access Token. Required for this tool.
+                 Get one at https://dmoera.xyz → Settings → API Keys.
+                 (If running locally with DMOERA_API_KEY env var set, this can be omitted.)
 
     Returns JSON with: success, parent_strategy_id, parent_bot_id,
     parent_name, parent_domain, code.
     """
-    result = _api_post(f"/api/creator/strategies/{strategy_id}/fork", {})
+    result = _api_post(f"/api/creator/strategies/{strategy_id}/fork", {}, api_key=api_key)
     return json.dumps(result, indent=2, default=str)
 
 
@@ -496,7 +515,7 @@ def get_open_source_leaderboard(
 
 
 @mcp.tool()
-def delist_strategy(strategy_id: int, tombstone: bool = False) -> str:
+def delist_strategy(strategy_id: int, tombstone: bool = False, api_key: str = "") -> str:
     """Delist a strategy from the platform.
 
     Retired bots (tombstone=False) stay visible with their performance history
@@ -507,12 +526,16 @@ def delist_strategy(strategy_id: int, tombstone: bool = False) -> str:
         strategy_id: The ID of the strategy to delist.
         tombstone: If True, permanently remove (cannot re-submit). If False,
                    just retire (can re-submit with improvements).
+        api_key: Your dMoERA Personal Access Token. Required for this tool.
+                 Get one at https://dmoera.xyz → Settings → API Keys.
+                 (If running locally with DMOERA_API_KEY env var set, this can be omitted.)
 
     Returns JSON with: success, strategy_id, status.
     """
     result = _api_post(
         f"/api/creator/strategies/{strategy_id}/delist",
         {"tombstone": tombstone},
+        api_key=api_key,
     )
     return json.dumps(result, indent=2, default=str)
 
