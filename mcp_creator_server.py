@@ -472,17 +472,17 @@ class MyStrategy(Strategy):
 
 ## Available ctx methods
 
-- `ctx.closes(lookback=N)` — last N close prices
+- `ctx.closes(lookback=N)` — last N close prices (oldest first)
 - `ctx.opens(lookback=N)` — last N open prices
 - `ctx.highs(lookback=N)` — last N high prices
 - `ctx.lows(lookback=N)` — last N low prices
 - `ctx.volumes(lookback=N)` — last N volumes
-- `ctx.rsi(period)` — RSI indicator
-- `ctx.atr(period)` — ATR indicator
-- `ctx.ema(period)` — EMA indicator
-- `ctx.sma(period)` — SMA indicator
 - `ctx.signal(direction, confidence, stop_loss_bps, take_profit_bps, horizon_seconds)` — return a signal
 - `ctx.features.get(key, default)` — external data feed value (see feature catalog)
+
+Note: There are no built-in indicator methods. Compute RSI, EMA, SMA, ATR etc.
+manually from `ctx.closes()` / `ctx.highs()` / `ctx.lows()`. Example:
+`ema = sum(closes[-period:]) / period` for a simple moving average.
 
 ## SignalDirection
 
