@@ -1,5 +1,7 @@
 # dMoERA Creator Studio — MCP Server
 
+[![smithery badge](https://smithery.ai/badge/mk9654/dMoERA-Creator)](https://smithery.ai/servers/mk9654/dMoERA-Creator)
+
 Build, backtest, and deploy crypto trading strategies using any MCP-compatible AI agent (Claude, Cursor, Windsurf, Devin, Copilot, etc.).
 
 ## What it does
