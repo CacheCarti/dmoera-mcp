@@ -908,7 +908,10 @@ if __name__ == "__main__":
         ]
         # Add middleware to read DMOERA_API_KEY from the HTTP header on each
         # request (Smithery and other hosted clients pass it as a header).
+        # We can't use mcp.run() because it creates a new app internally —
+        # instead we get the app, add middleware, and run uvicorn directly.
         from starlette.middleware.base import BaseHTTPMiddleware
+        import uvicorn
 
         class ApiKeyHeaderMiddleware(BaseHTTPMiddleware):
             async def dispatch(self, request, call_next):
@@ -918,8 +921,16 @@ if __name__ == "__main__":
                     _API_KEY_HEADER = key
                 return await call_next(request)
 
-        # FastMCP exposes the underlying Starlette app via the streamable_http_app
-        mcp.streamable_http_app().add_middleware(ApiKeyHeaderMiddleware)
-        mcp.run(transport="streamable-http")
+        app = mcp.streamable_http_app()
+        app.add_middleware(ApiKeyHeaderMiddleware)
+        config = uvicorn.Config(
+            app,
+            host=host,
+            port=port,
+            log_level=mcp.settings.log_level.lower(),
+        )
+        server = uvicorn.Server(config)
+        import anyio
+        anyio.run(server.serve)
     else:
         mcp.run()
