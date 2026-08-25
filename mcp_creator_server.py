@@ -45,8 +45,9 @@ API_URL = os.environ.get("DMOERA_API_URL", "http://localhost:8000").rstrip("/")
 # API_KEY is read from env var at startup (for stdio mode) OR from the
 # DMOERA_API_KEY HTTP header on each request (for hosted/Smithery mode).
 # _get_api_key() checks both, with the header taking precedence.
+import contextvars
 _API_KEY_ENV = os.environ.get("DMOERA_API_KEY", "")
-_API_KEY_HEADER = None  # Set by middleware on each HTTP request
+_API_KEY_CTX = contextvars.ContextVar("api_key_header", default="")
 
 mcp = FastMCP(
     "dmoera-creator",
@@ -63,8 +64,9 @@ mcp = FastMCP(
 
 def _get_api_key() -> str:
     """Get the API key from the HTTP header (hosted mode) or env var (stdio mode)."""
-    if _API_KEY_HEADER:
-        return _API_KEY_HEADER
+    header_key = _API_KEY_CTX.get()
+    if header_key:
+        return header_key
     return _API_KEY_ENV
 
 
@@ -915,10 +917,10 @@ if __name__ == "__main__":
 
         class ApiKeyHeaderMiddleware(BaseHTTPMiddleware):
             async def dispatch(self, request, call_next):
-                global _API_KEY_HEADER
                 key = request.headers.get("DMOERA_API_KEY")
                 if key:
-                    _API_KEY_HEADER = key
+                    _API_KEY_CTX.set(key)
+                    print(f"[MCP] API key set from header: {key[:16]}...")
                 return await call_next(request)
 
         app = mcp.streamable_http_app()
