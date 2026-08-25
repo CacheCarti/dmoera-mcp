@@ -413,6 +413,16 @@ def creator_api_docs() -> str:
     except Exception:
         features = []
 
+    # Build feature table with backtest mode info
+    if features:
+        feature_table = "| Key | Label | Backtest | Status |\n|-----|-------|----------|--------|\n"
+        for f in features:
+            bt = f.get("backtest_mode", "unknown")
+            bt_icon = {"real": "real history", "proxy": "estimated", "none": "live only"}.get(bt, bt)
+            feature_table += f"| `{f.get('key', '')}` | {f.get('label', '')} | {bt_icon} | {f.get('status', '')} |\n"
+    else:
+        feature_table = "Call get_feature_catalog for the full list."
+
     return f"""# dMoERA Creator API — Strategy Contract
 
 ## Strategy Structure
@@ -427,7 +437,7 @@ METADATA = {{
     "declared_tp_bps": 300.0,       # Take-profit: 3.0%
     "declared_hold_seconds": 3600,  # Max hold: 1 hour
     "warmup_bars": 20,              # Bars needed before trading
-    "required_features": [],         # External data feeds needed
+    "required_features": [],         # External data feeds (see below)
 }}
 
 
@@ -472,12 +482,187 @@ class MyStrategy(Strategy):
 - `ctx.ema(period)` — EMA indicator
 - `ctx.sma(period)` — SMA indicator
 - `ctx.signal(direction, confidence, stop_loss_bps, take_profit_bps, horizon_seconds)` — return a signal
-- `ctx.features` — external data feeds (see feature catalog)
+- `ctx.features.get(key, default)` — external data feed value (see feature catalog)
 
 ## SignalDirection
 
 - `SignalDirection.LONG` — buy/long position
 - `SignalDirection.SHORT` — sell/short position
+
+## Data Feeds (ctx.features)
+
+Strategies can read external data via `ctx.features.get(key, default)`. Each feed has a
+backtest mode that determines what validation feeds it:
+
+- **real** — true point-in-time history. Backtest scores are valid.
+- **proxy** — estimated from OHLCV data. Correlated with live but different distribution.
+  Prefer relative comparisons (percentile, sign, change) over absolute thresholds.
+- **none** — reads the default value during validation. Any branch on it is dead code
+  in backtest. Only useful for live-only logic.
+
+{feature_table}
+
+### Example: Funding Rate Mean Reversion
+
+```python
+METADATA = {{
+    "name": "Funding Fade",
+    "domain": "eth_usdc",
+    "declared_sl_bps": 200.0,
+    "declared_tp_bps": 400.0,
+    "declared_hold_seconds": 7200,
+    "warmup_bars": 20,
+    "required_features": ["funding_rate_ethusdt"],
+}}
+
+class FundingFadeStrategy(Strategy):
+    \"\"\"Fade extreme funding rates — crowded longs tend to unwind.\"\"\"
+
+    def on_bar(self, ctx):
+        fr = ctx.features.get("funding_rate_ethusdt", 0.0)
+        # Positive funding = longs pay shorts = crowded long
+        if fr > 0.0003:  # 0.03% per 8h = very crowded
+            return ctx.signal(
+                direction=SignalDirection.SHORT,
+                confidence=0.55,
+                stop_loss_bps=200.0,
+                take_profit_bps=400.0,
+                horizon_seconds=7200,
+                metadata={{"reason": "funding_crowded_long", "fr": fr}},
+            )
+        elif fr < -0.0003:  # crowded short
+            return ctx.signal(
+                direction=SignalDirection.LONG,
+                confidence=0.55,
+                stop_loss_bps=200.0,
+                take_profit_bps=400.0,
+                horizon_seconds=7200,
+                metadata={{"reason": "funding_crowded_short", "fr": fr}},
+            )
+        return None
+```
+
+### Example: Fear & Greed Contrarian
+
+```python
+METADATA = {{
+    "name": "FNG Contrarian",
+    "domain": "btc_usdc",
+    "declared_sl_bps": 150.0,
+    "declared_tp_bps": 300.0,
+    "declared_hold_seconds": 86400,
+    "warmup_bars": 10,
+    "required_features": ["fear_greed_index"],
+}}
+
+class FngContrarianStrategy(Strategy):
+    \"\"\"Buy extreme fear, sell extreme greed.\"\"\"
+
+    def on_bar(self, ctx):
+        fg = ctx.features.get("fear_greed_index", 50)
+        if fg < 25:  # Extreme Fear
+            return ctx.signal(
+                direction=SignalDirection.LONG,
+                confidence=0.6,
+                stop_loss_bps=150.0,
+                take_profit_bps=300.0,
+                horizon_seconds=86400,
+                metadata={{"reason": "extreme_fear", "fg": fg}},
+            )
+        elif fg > 75:  # Extreme Greed
+            return ctx.signal(
+                direction=SignalDirection.SHORT,
+                confidence=0.6,
+                stop_loss_bps=150.0,
+                take_profit_bps=300.0,
+                horizon_seconds=86400,
+                metadata={{"reason": "extreme_greed", "fg": fg}},
+            )
+        return None
+```
+
+### Example: Cross-Asset Relative Strength
+
+```python
+METADATA = {{
+    "name": "ETH-BTC Relative Strength",
+    "domain": "eth_usdc",
+    "declared_sl_bps": 200.0,
+    "declared_tp_bps": 400.0,
+    "declared_hold_seconds": 3600,
+    "warmup_bars": 20,
+    "required_features": ["btc_return_pct", "eth_return_pct"],
+}}
+
+class RelStrengthStrategy(Strategy):
+    \"\"\"Long ETH when it's outperforming BTC.\"\"\"
+
+    def on_bar(self, ctx):
+        btc_mom = ctx.features.get("btc_return_pct", 0.0)
+        eth_mom = ctx.features.get("eth_return_pct", 0.0)
+        spread = eth_mom - btc_mom
+        if spread > 1.0:  # ETH outperforming by >1%
+            return ctx.signal(
+                direction=SignalDirection.LONG,
+                confidence=0.55,
+                stop_loss_bps=200.0,
+                take_profit_bps=400.0,
+                horizon_seconds=3600,
+                metadata={{"reason": "eth_outperforming", "spread": spread}},
+            )
+        elif spread < -1.0:
+            return ctx.signal(
+                direction=SignalDirection.SHORT,
+                confidence=0.55,
+                stop_loss_bps=200.0,
+                take_profit_bps=400.0,
+                horizon_seconds=3600,
+                metadata={{"reason": "eth_underperforming", "spread": spread}},
+            )
+        return None
+```
+
+### Example: Order Book Imbalance (proxy — use relative comparisons)
+
+```python
+METADATA = {{
+    "name": "Book Imbalance Signal",
+    "domain": "eth_usdc",
+    "declared_sl_bps": 100.0,
+    "declared_tp_bps": 200.0,
+    "declared_hold_seconds": 1800,
+    "warmup_bars": 50,
+    "required_features": ["book_imbalance_ethusdt"],
+}}
+
+class BookImbalanceStrategy(Strategy):
+    \"\"\"Trade with order book pressure. NOTE: backtest uses an OHLCV proxy —
+    compare to recent range, not a fixed threshold.\"\"\"
+
+    def on_bar(self, ctx):
+        imb = ctx.features.get("book_imbalance_ethusdt", 0.0)
+        # Use sign and relative strength, not absolute thresholds
+        # (proxy values have different distribution than live)
+        if imb > 0.15:
+            return ctx.signal(
+                direction=SignalDirection.LONG,
+                confidence=0.5,
+                stop_loss_bps=100.0,
+                take_profit_bps=200.0,
+                horizon_seconds=1800,
+                metadata={{"reason": "buy_pressure", "imb": imb}},
+            )
+        elif imb < -0.15:
+            return ctx.signal(
+                direction=SignalDirection.SHORT,
+                confidence=0.5,
+                stop_loss_bps=100.0,
+                take_profit_bps=200.0,
+                horizon_seconds=1800,
+                metadata={{"reason": "sell_pressure", "imb": imb}},
+            )
+        return None
+```
 
 ## Validation Stages
 
@@ -489,9 +674,9 @@ class MyStrategy(Strategy):
 6. perturbation — market stress test
 7. holdout — server-side reserved data (pass/fail only)
 
-## Available Features
+## Available Features (live)
 
-{json.dumps(features, indent=2) if features else "Fetch get_feature_catalog tool for the full list."}
+{json.dumps(features, indent=2) if features else "Call get_feature_catalog for the full list."}
 
 ## Domains
 
@@ -501,6 +686,11 @@ class MyStrategy(Strategy):
 
 3-day rounds. Bots qualify on their own performance (rolling Sharpe, return, consistency).
 Top 3 per domain win USDT from the reward pool. No user following needed to qualify.
+
+## Authentication
+
+To use sandbox_backtest and submit_strategy, set the DMOERA_API_KEY environment variable
+to a personal access token generated from your dMoERA account settings (Settings > API Keys).
 """
 
 
