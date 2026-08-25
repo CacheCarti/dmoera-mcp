@@ -428,20 +428,22 @@ def creator_api_docs() -> str:
 ## Strategy Structure
 
 Strategies subclass `Strategy` and implement `on_bar(self, ctx) -> Signal`.
+**METADATA must be a CLASS ATTRIBUTE inside the Strategy subclass**, not a
+module-level variable. If METADATA is at module level, validation will fail
+with "Missing required METADATA field: name".
 
 ```python
-METADATA = {{
-    "name": "My Strategy",
-    "domain": "eth_usdc",           # eth_usdc, btc_usdc, sol_usdc, or _scalp variants
-    "declared_sl_bps": 150.0,       # Stop-loss: 1.5%
-    "declared_tp_bps": 300.0,       # Take-profit: 3.0%
-    "declared_hold_seconds": 3600,  # Max hold: 1 hour
-    "warmup_bars": 20,              # Bars needed before trading
-    "required_features": [],         # External data feeds (see below)
-}}
-
-
 class MyStrategy(Strategy):
+    METADATA = {{
+        "name": "My Strategy",
+        "domain": "eth_usdc",           # eth_usdc, btc_usdc, sol_usdc, or _scalp variants
+        "declared_sl_bps": 150.0,       # Stop-loss: 1.5%
+        "declared_tp_bps": 300.0,       # Take-profit: 3.0%
+        "declared_hold_seconds": 3600,  # Max hold: 1 hour
+        "warmup_bars": 20,              # Bars needed before trading
+        "required_features": [],         # External data feeds (see below)
+    }}
+
     def initialize(self, ctx) -> None:
         pass
 
@@ -505,18 +507,17 @@ backtest mode that determines what validation feeds it:
 ### Example: Funding Rate Mean Reversion
 
 ```python
-METADATA = {{
-    "name": "Funding Fade",
-    "domain": "eth_usdc",
-    "declared_sl_bps": 200.0,
-    "declared_tp_bps": 400.0,
-    "declared_hold_seconds": 7200,
-    "warmup_bars": 20,
-    "required_features": ["funding_rate_ethusdt"],
-}}
-
 class FundingFadeStrategy(Strategy):
     \"\"\"Fade extreme funding rates — crowded longs tend to unwind.\"\"\"
+    METADATA = {{
+        "name": "Funding Fade",
+        "domain": "eth_usdc",
+        "declared_sl_bps": 200.0,
+        "declared_tp_bps": 400.0,
+        "declared_hold_seconds": 7200,
+        "warmup_bars": 20,
+        "required_features": ["funding_rate_ethusdt"],
+    }}
 
     def on_bar(self, ctx):
         fr = ctx.features.get("funding_rate_ethusdt", 0.0)
@@ -545,18 +546,17 @@ class FundingFadeStrategy(Strategy):
 ### Example: Fear & Greed Contrarian
 
 ```python
-METADATA = {{
-    "name": "FNG Contrarian",
-    "domain": "btc_usdc",
-    "declared_sl_bps": 150.0,
-    "declared_tp_bps": 300.0,
-    "declared_hold_seconds": 86400,
-    "warmup_bars": 10,
-    "required_features": ["fear_greed_index"],
-}}
-
 class FngContrarianStrategy(Strategy):
     \"\"\"Buy extreme fear, sell extreme greed.\"\"\"
+    METADATA = {{
+        "name": "FNG Contrarian",
+        "domain": "btc_usdc",
+        "declared_sl_bps": 150.0,
+        "declared_tp_bps": 300.0,
+        "declared_hold_seconds": 86400,
+        "warmup_bars": 10,
+        "required_features": ["fear_greed_index"],
+    }}
 
     def on_bar(self, ctx):
         fg = ctx.features.get("fear_greed_index", 50)
@@ -584,18 +584,17 @@ class FngContrarianStrategy(Strategy):
 ### Example: Cross-Asset Relative Strength
 
 ```python
-METADATA = {{
-    "name": "ETH-BTC Relative Strength",
-    "domain": "eth_usdc",
-    "declared_sl_bps": 200.0,
-    "declared_tp_bps": 400.0,
-    "declared_hold_seconds": 3600,
-    "warmup_bars": 20,
-    "required_features": ["btc_return_pct", "eth_return_pct"],
-}}
-
 class RelStrengthStrategy(Strategy):
     \"\"\"Long ETH when it's outperforming BTC.\"\"\"
+    METADATA = {{
+        "name": "ETH-BTC Relative Strength",
+        "domain": "eth_usdc",
+        "declared_sl_bps": 200.0,
+        "declared_tp_bps": 400.0,
+        "declared_hold_seconds": 3600,
+        "warmup_bars": 20,
+        "required_features": ["btc_return_pct", "eth_return_pct"],
+    }}
 
     def on_bar(self, ctx):
         btc_mom = ctx.features.get("btc_return_pct", 0.0)
@@ -625,19 +624,18 @@ class RelStrengthStrategy(Strategy):
 ### Example: Order Book Imbalance (proxy — use relative comparisons)
 
 ```python
-METADATA = {{
-    "name": "Book Imbalance Signal",
-    "domain": "eth_usdc",
-    "declared_sl_bps": 100.0,
-    "declared_tp_bps": 200.0,
-    "declared_hold_seconds": 1800,
-    "warmup_bars": 50,
-    "required_features": ["book_imbalance_ethusdt"],
-}}
-
 class BookImbalanceStrategy(Strategy):
     \"\"\"Trade with order book pressure. NOTE: backtest uses an OHLCV proxy —
     compare to recent range, not a fixed threshold.\"\"\"
+    METADATA = {{
+        "name": "Book Imbalance Signal",
+        "domain": "eth_usdc",
+        "declared_sl_bps": 100.0,
+        "declared_tp_bps": 200.0,
+        "declared_hold_seconds": 1800,
+        "warmup_bars": 50,
+        "required_features": ["book_imbalance_ethusdt"],
+    }}
 
     def on_bar(self, ctx):
         imb = ctx.features.get("book_imbalance_ethusdt", 0.0)
@@ -702,19 +700,18 @@ Strategy: [Your Strategy Name]
 Domain: eth_usdc
 """
 
-METADATA = {
-    "name": "[Your Strategy Name]",
-    "domain": "eth_usdc",
-    "declared_sl_bps": 150.0,
-    "declared_tp_bps": 300.0,
-    "declared_hold_seconds": 3600,
-    "warmup_bars": 20,
-    "required_features": [],
-}
-
-
 class MyStrategy(Strategy):
     """Describe your strategy's edge here."""
+
+    METADATA = {
+        "name": "[Your Strategy Name]",
+        "domain": "eth_usdc",
+        "declared_sl_bps": 150.0,
+        "declared_tp_bps": 300.0,
+        "declared_hold_seconds": 3600,
+        "warmup_bars": 20,
+        "required_features": [],
+    }
 
     def initialize(self, ctx) -> None:
         """Called once before the first bar. Set up indicators."""
