@@ -879,6 +879,9 @@ if __name__ == "__main__":
         host = os.environ.get("MCP_HOST", "0.0.0.0")
         mcp.settings.port = port
         mcp.settings.host = host
+        # Allow external hosts through the DNS rebinding protection
+        mcp.settings.transport_security.allowed_hosts = ["*"]
+        mcp.settings.transport_security.allowed_origins = ["*"]
         mcp.run(transport="streamable-http")
     else:
         mcp.run()
