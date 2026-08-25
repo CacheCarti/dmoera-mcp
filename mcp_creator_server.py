@@ -1,0 +1,565 @@
+"""
+dMoERA Creator Studio — MCP Server (API Client Edition)
+
+Exposes the dMoERA Creator API as Model Context Protocol tools so any
+AI agent (Claude, Cursor, Windsurf, Devin, Copilot, etc.) can:
+  - Discover available trading domains and data feeds
+  - List and inspect bots/strategies and their performance
+  - Sandbox-backtest strategy code before submission
+  - Submit strategies for full validation and live deployment
+  - Read market regime and feature data for strategy logic
+
+This is a thin API client — it talks to a running dMoERA backend
+via HTTP. No internal dMoERA code is imported or included.
+
+Configuration:
+  Set DMOERA_API_URL environment variable (default: http://localhost:8000)
+  Set DMOERA_API_KEY environment variable for authenticated endpoints (optional)
+
+Run standalone:
+    python mcp_creator_server.py
+
+Or configure in your AI client's MCP settings:
+    {
+      "mcpServers": {
+        "dmoera-creator": {
+          "command": "python",
+          "args": ["mcp_creator_server.py"],
+          "env": {
+            "DMOERA_API_URL": "https://api.dmoera.xyz"
+          }
+        }
+      }
+    }
+"""
+import os
+import json
+import urllib.request
+import urllib.error
+from typing import Optional
+
+from mcp.server.fastmcp import FastMCP
+
+# ── Configuration ────────────────────────────────────────
+API_URL = os.environ.get("DMOERA_API_URL", "http://localhost:8000").rstrip("/")
+API_KEY = os.environ.get("DMOERA_API_KEY", "")
+
+mcp = FastMCP(
+    "dmoera-creator",
+    instructions=(
+        "dMoERA Creator Studio — build, test, and deploy crypto trading strategies. "
+        "Available tools: list_domains, list_bots, get_bot_profile, get_feature_catalog, "
+        "get_market_regime, get_current_prices, sandbox_backtest, submit_strategy, "
+        "list_strategies, get_strategy_report, get_marketplace_bots, get_tournament_status. "
+        "Read the creator-api-docs resource for the full strategy contract and examples."
+    ),
+)
+
+
+# ── HTTP helper ──────────────────────────────────────────
+def _api_get(path: str) -> dict:
+    """Make a GET request to the dMoERA API."""
+    url = f"{API_URL}{path}"
+    req = urllib.request.Request(url)
+    if API_KEY:
+        req.add_header("Authorization", f"Bearer {API_KEY}")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        return {"error": f"HTTP {e.code}: {body[:500]}"}
+    except urllib.error.URLError as e:
+        return {"error": f"Connection failed: {e.reason}. Is the dMoERA backend running at {API_URL}?"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _api_post(path: str, body: dict) -> dict:
+    """Make a POST request to the dMoERA API."""
+    url = f"{API_URL}{path}"
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    if API_KEY:
+        req.add_header("Authorization", f"Bearer {API_KEY}")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", errors="replace")
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {"error": f"HTTP {e.code}: {raw[:500]}"}
+    except urllib.error.URLError as e:
+        return {"error": f"Connection failed: {e.reason}. Is the dMoERA backend running at {API_URL}?"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ── Discovery Tools ──────────────────────────────────────
+
+# Static domain list — this is public information, not internal code
+_DOMAINS = [
+    {"key": "eth_usdc", "name": "ETH/USDC Swing", "type": "swing", "base_asset": "ETH", "quote_asset": "USDC", "grading_seconds": 3600, "feed_symbols": ["ETHUSDT"]},
+    {"key": "btc_usdc", "name": "BTC/USDC Swing", "type": "swing", "base_asset": "BTC", "quote_asset": "USDC", "grading_seconds": 3600, "feed_symbols": ["BTCUSDT"]},
+    {"key": "sol_usdc", "name": "SOL/USDC Swing", "type": "swing", "base_asset": "SOL", "quote_asset": "USDC", "grading_seconds": 3600, "feed_symbols": ["SOLUSDT"]},
+    {"key": "eth_usdc_scalp", "name": "ETH/USDC Scalp", "type": "scalp", "base_asset": "ETH", "quote_asset": "USDC", "grading_seconds": 300, "feed_symbols": ["ETHUSDT"]},
+    {"key": "btc_usdc_scalp", "name": "BTC/USDC Scalp", "type": "scalp", "base_asset": "BTC", "quote_asset": "USDC", "grading_seconds": 300, "feed_symbols": ["BTCUSDT"]},
+    {"key": "sol_usdc_scalp", "name": "SOL/USDC Scalp", "type": "scalp", "base_asset": "SOL", "quote_asset": "USDC", "grading_seconds": 300, "feed_symbols": ["SOLUSDT"]},
+]
+
+
+@mcp.tool()
+def list_domains() -> str:
+    """List all available trading domains on dMoERA.
+
+    Domains define what asset pair a strategy trades, what time horizon
+    it uses (scalp=5m, swing=1h), and what data is available.
+    Strategies must declare which domain they belong to.
+
+    Returns a JSON array of domain objects with: key, name, type,
+    base_asset, quote_asset, grading_seconds, and feed_symbols.
+    """
+    return json.dumps(_DOMAINS, indent=2)
+
+
+@mcp.tool()
+def list_bots(domain: Optional[str] = None, limit: int = 20) -> str:
+    """List trading bots ranked by performance.
+
+    Args:
+        domain: Filter by domain key (e.g. "eth_usdc", "btc_usdc", "sol_usdc").
+               If omitted, returns top bots across all domains.
+        limit: Maximum number of bots to return (default 20, max 100).
+
+    Returns JSON array of bots with: bot_id, domain, strategy_name, sharpe,
+    win_rate, total_trades, return_bps, and validation_score.
+    """
+    data = _api_get("/api/leaderboard")
+    if "error" in data:
+        return json.dumps(data, indent=2)
+
+    bots = []
+    for d in data.get("domains", []):
+        d_key = d.get("domain_key", d.get("key", ""))
+        if domain and d_key != domain:
+            continue
+        for b in d.get("bots", []):
+            bots.append({
+                "bot_id": b.get("bot_id", ""),
+                "domain": d_key,
+                "strategy_name": b.get("name", b.get("strategy_name", "unknown")),
+                "sharpe": round(b.get("sharpe", b.get("sharpe_proxy", 0)), 3),
+                "win_rate": round(b.get("win_rate", 0), 3),
+                "total_trades": b.get("total_trades", b.get("total_predictions", 0)),
+                "return_bps": round(b.get("return_bps", b.get("realized_return_bps", 0)), 1),
+                "validation_score": round(b.get("validation_score", b.get("score", 0)), 1),
+            })
+    bots = bots[:max(1, min(limit, 100))]
+    return json.dumps(bots, indent=2)
+
+
+@mcp.tool()
+def get_bot_profile(bot_id: str) -> str:
+    """Get detailed profile and performance stats for a specific bot.
+
+    Args:
+        bot_id: The bot identifier (e.g. "Eth_Full_Ensemble").
+
+    Returns JSON with: bot_id, domain, strategy type, full performance
+    metrics (Sharpe, Sortino, Calmar, profit factor, win rate, return,
+    max drawdown, avg trade), and proven tier.
+    """
+    data = _api_get(f"/api/strategy/{bot_id}/performance")
+    if "error" in data:
+        # Try the leaderboard and search for the bot
+        lb = _api_get("/api/leaderboard")
+        for d in lb.get("domains", []):
+            for b in d.get("bots", []):
+                if b.get("bot_id") == bot_id:
+                    return json.dumps({
+                        "bot_id": bot_id,
+                        "domain": d.get("domain_key", ""),
+                        "strategy_name": b.get("name", ""),
+                        "performance": {
+                            "sharpe": b.get("sharpe", b.get("sharpe_proxy", 0)),
+                            "win_rate": b.get("win_rate", 0),
+                            "total_trades": b.get("total_trades", b.get("total_predictions", 0)),
+                            "total_return_bps": b.get("return_bps", b.get("realized_return_bps", 0)),
+                            "max_drawdown_bps": b.get("max_drawdown_bps", 0),
+                        },
+                        "proven_tier": b.get("proven_tier", "unproven"),
+                    }, indent=2)
+        return json.dumps(data, indent=2)
+    return json.dumps(data, indent=2, default=str)
+
+
+@mcp.tool()
+def get_feature_catalog() -> str:
+    """List all data feeds available to strategies via ctx.features.
+
+    Features are external data that strategies can read during on_bar().
+    Each feature has a status: "live" (available now) or "planned" (roadmap).
+
+    Returns JSON array of features with: key, label, description, unit,
+    example, cadence, source, and status.
+    """
+    data = _api_get("/api/creator/features")
+    if "error" in data:
+        return json.dumps(data, indent=2)
+    return json.dumps(data.get("features", []), indent=2)
+
+
+# ── Market Data Tools ────────────────────────────────────
+
+@mcp.tool()
+def get_market_regime() -> str:
+    """Get current market regime classification.
+
+    Returns the aggregate regime (e.g. "bull_calm", "bear_volatile"),
+    per-symbol regimes, crisis score, and the derivatives data driving
+    the classification (funding rates, open interest, long/short ratios).
+
+    Regime determines which trade directions are allowed:
+    - bull_* -> longs only
+    - bear_* -> shorts only
+    - neutral_* -> both longs and shorts
+    - crisis/meltdown -> no new positions
+    """
+    return json.dumps(_api_get("/api/regime"), indent=2, default=str)
+
+
+@mcp.tool()
+def get_current_prices() -> str:
+    """Get current live prices for all tracked symbols.
+
+    Returns JSON with symbol -> {price, change_24h_pct, volume_24h, source}
+    for ETHUSDT, BTCUSDT, SOLUSDT.
+    """
+    data = _api_get("/api/state")
+    if "error" in data:
+        return json.dumps(data, indent=2)
+    # Extract market prices from the state payload
+    markets = data.get("markets", [])
+    prices = {}
+    for m in markets:
+        sym = m.get("symbol_key", m.get("symbol", ""))
+        if sym:
+            prices[sym] = {
+                "price": m.get("price", 0),
+                "change_24h_pct": m.get("change_24h_pct", 0),
+                "volume_24h": m.get("volume_24h", 0),
+                "source": m.get("source", ""),
+            }
+    return json.dumps(prices, indent=2)
+
+
+# ── Strategy Development Tools ───────────────────────────
+
+@mcp.tool()
+def sandbox_backtest(
+    code: str,
+    domain: str = "eth_usdc",
+    user_id: str = "mcp_sandbox",
+) -> str:
+    """Run a sandbox backtest of strategy code without persisting anything.
+
+    This is the fastest way to test a strategy. The code is run through
+    static checks and a full backtest on historical data, but no Strategy
+    rows are created. Use this for rapid iteration.
+
+    Args:
+        code: Python source code implementing the Strategy contract.
+              Must define a METADATA dict and a class extending Strategy
+              with an on_bar(ctx) -> Signal method. See the strategy template resource.
+        domain: Trading domain (e.g. "eth_usdc", "btc_usdc", "sol_usdc").
+        user_id: Identifier for the creator (requires authentication for this endpoint).
+
+    Returns JSON with: success, metrics (sharpe, sortino, win_rate,
+    total_trades, return_bps, max_drawdown, regime_breakdown),
+    or error details if validation failed.
+    """
+    result = _api_post("/api/creator/sandbox", {
+        "code": code,
+        "domain": domain,
+    })
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def submit_strategy(
+    name: str,
+    domain: str,
+    code: str,
+    user_id: str,
+    symbol: str = "ETHUSDT",
+) -> str:
+    """Submit a strategy for full validation and live deployment.
+
+    Runs the complete 7-stage validation pipeline:
+    1. static_check — code safety (banned imports, syntax)
+    2. in_sample — sanity check on training data
+    3. out_of_sample — test on unseen data (70/30 split)
+    4. walk_forward — rolling window validation
+    5. randomized_start — different random start points
+    6. perturbation — market stress test
+    7. holdout — server-side reserved data (pass/fail only)
+
+    If all stages pass, the strategy is registered for isolated live
+    paper trading with status="incubating". Promotion to "live" requires
+    a proven track record.
+
+    Args:
+        name: Human-readable strategy name (e.g. "ETH Momentum v2").
+        domain: Trading domain key (e.g. "eth_usdc").
+        code: Python source code implementing the Strategy contract.
+        user_id: The creator's user ID (authentication required).
+        symbol: Price symbol (auto-detected from domain if omitted).
+
+    Returns JSON with: success, strategy_id, bot_id, validation results
+    per stage, or error details.
+    """
+    result = _api_post("/api/creator/strategies", {
+        "name": name,
+        "domain": domain,
+        "code": code,
+        "symbol": symbol,
+    })
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def list_strategies(user_id: str) -> str:
+    """List all strategies created by a user.
+
+    Args:
+        user_id: The creator's user ID (authentication required).
+
+    Returns JSON array of strategies with: id, bot_id, name, domain,
+    status, and created_at.
+    """
+    return json.dumps(_api_get("/api/creator/strategies"), indent=2, default=str)
+
+
+@mcp.tool()
+def get_strategy_report(strategy_id: int) -> str:
+    """Get a detailed report card for a strategy.
+
+    Includes validation run results for all 7 stages, performance metrics,
+    and the integrity block (code hash, AST hash, parameter fingerprint).
+
+    Args:
+        strategy_id: The strategy's database ID.
+
+    Returns JSON with: strategy details, latest validation runs, metrics.
+    """
+    return json.dumps(_api_get(f"/api/creator/report-card/{strategy_id}"), indent=2, default=str)
+
+
+# ── Marketplace Tools ────────────────────────────────────
+
+@mcp.tool()
+def get_marketplace_bots(domain: Optional[str] = None, sort: str = "rating", limit: int = 20) -> str:
+    """List bots published to the marketplace.
+
+    Args:
+        domain: Filter by domain (e.g. "eth_usdc"). Omit for all domains.
+        sort: Sort order — "rating", "return", "subscribers", or "newest".
+        limit: Max results (default 20, max 100).
+
+    Returns JSON array of marketplace listings with: listing_id, bot_id,
+    title, description, domain, creator, monthly_price_usd, stats
+    (win_rate, return_bps, sharpe), subscriber_count, and avg_rating.
+    """
+    params = f"?sort={sort}&limit={max(1, min(limit, 100))}"
+    if domain:
+        params += f"&domain={domain}"
+    return json.dumps(_api_get(f"/api/marketplace/bots{params}"), indent=2, default=str)
+
+
+# ── Tournament Tools ─────────────────────────────────────
+
+@mcp.tool()
+def get_tournament_status() -> str:
+    """Get current tournament round status and leaderboard.
+
+    Tournaments run every 3 days. Top 3 bots per domain win prizes
+    from the reward pool. Scoring is based on the bot's own performance:
+    50% risk-adjusted (rolling Sharpe), 30% total return, 20% consistency.
+
+    Returns JSON with: current round info (round_id, start/end time,
+    reward_pool_usd, total_participants, hours_remaining), and leaderboard entries.
+    """
+    stats = _api_get("/api/tournament/stats")
+    leaderboard = _api_get("/api/tournament/leaderboard?limit=20")
+    result = {
+        "stats": stats,
+        "leaderboard": leaderboard.get("entries", []) if "error" not in leaderboard else [],
+    }
+    return json.dumps(result, indent=2, default=str)
+
+
+# ── Resources (read-only context) ────────────────────────
+
+@mcp.resource("creator-api://docs")
+def creator_api_docs() -> str:
+    """The full creator API documentation for AI agents."""
+    # Try to fetch from the running backend, fall back to embedded summary
+    try:
+        data = _api_get("/api/creator/features")
+        features = data.get("features", []) if "error" not in data else []
+    except Exception:
+        features = []
+
+    return f"""# dMoERA Creator API — Strategy Contract
+
+## Strategy Structure
+
+Strategies subclass `Strategy` and implement `on_bar(self, ctx) -> Signal`.
+
+```python
+METADATA = {{
+    "name": "My Strategy",
+    "domain": "eth_usdc",           # eth_usdc, btc_usdc, sol_usdc, or _scalp variants
+    "declared_sl_bps": 150.0,       # Stop-loss: 1.5%
+    "declared_tp_bps": 300.0,       # Take-profit: 3.0%
+    "declared_hold_seconds": 3600,  # Max hold: 1 hour
+    "warmup_bars": 20,              # Bars needed before trading
+    "required_features": [],         # External data feeds needed
+}}
+
+
+class MyStrategy(Strategy):
+    def initialize(self, ctx) -> None:
+        pass
+
+    def on_bar(self, ctx):
+        closes = ctx.closes(lookback=20)
+        if len(closes) < 20:
+            return None
+        sma_fast = sum(closes[-5:]) / 5
+        sma_slow = sum(closes[-20:]) / 20
+        if sma_fast > sma_slow:
+            return ctx.signal(
+                direction=SignalDirection.LONG,
+                confidence=0.6,
+                stop_loss_bps=150.0,
+                take_profit_bps=300.0,
+                horizon_seconds=3600,
+            )
+        elif sma_fast < sma_slow:
+            return ctx.signal(
+                direction=SignalDirection.SHORT,
+                confidence=0.6,
+                stop_loss_bps=150.0,
+                take_profit_bps=300.0,
+                horizon_seconds=3600,
+            )
+        return None
+```
+
+## Available ctx methods
+
+- `ctx.closes(lookback=N)` — last N close prices
+- `ctx.opens(lookback=N)` — last N open prices
+- `ctx.highs(lookback=N)` — last N high prices
+- `ctx.lows(lookback=N)` — last N low prices
+- `ctx.volumes(lookback=N)` — last N volumes
+- `ctx.rsi(period)` — RSI indicator
+- `ctx.atr(period)` — ATR indicator
+- `ctx.ema(period)` — EMA indicator
+- `ctx.sma(period)` — SMA indicator
+- `ctx.signal(direction, confidence, stop_loss_bps, take_profit_bps, horizon_seconds)` — return a signal
+- `ctx.features` — external data feeds (see feature catalog)
+
+## SignalDirection
+
+- `SignalDirection.LONG` — buy/long position
+- `SignalDirection.SHORT` — sell/short position
+
+## Validation Stages
+
+1. static_check — banned imports, syntax, contract compliance
+2. in_sample — backtest on training data
+3. out_of_sample — test on unseen data (70/30 split)
+4. walk_forward — 8 rolling windows, each with fit + test
+5. randomized_start — different random start points
+6. perturbation — market stress test
+7. holdout — server-side reserved data (pass/fail only)
+
+## Available Features
+
+{json.dumps(features, indent=2) if features else "Fetch get_feature_catalog tool for the full list."}
+
+## Domains
+
+{json.dumps(_DOMAINS, indent=2)}
+
+## Tournament
+
+3-day rounds. Bots qualify on their own performance (rolling Sharpe, return, consistency).
+Top 3 per domain win USDT from the reward pool. No user following needed to qualify.
+"""
+
+
+@mcp.resource("creator-api://strategy-template")
+def strategy_template() -> str:
+    """A copy-pasteable strategy template implementing the contract."""
+    return '''"""
+Strategy: [Your Strategy Name]
+Domain: eth_usdc
+"""
+
+METADATA = {
+    "name": "[Your Strategy Name]",
+    "domain": "eth_usdc",
+    "declared_sl_bps": 150.0,
+    "declared_tp_bps": 300.0,
+    "declared_hold_seconds": 3600,
+    "warmup_bars": 20,
+    "required_features": [],
+}
+
+
+class MyStrategy(Strategy):
+    """Describe your strategy's edge here."""
+
+    def initialize(self, ctx) -> None:
+        """Called once before the first bar. Set up indicators."""
+        pass
+
+    def on_bar(self, ctx):
+        """Called once per closed bar. Return a Signal or None."""
+        closes = ctx.closes(lookback=20)
+        if len(closes) < 20:
+            return None
+
+        sma_fast = sum(closes[-5:]) / 5
+        sma_slow = sum(closes[-20:]) / 20
+
+        if sma_fast > sma_slow:
+            return ctx.signal(
+                direction=SignalDirection.LONG,
+                confidence=0.6,
+                stop_loss_bps=150.0,
+                take_profit_bps=300.0,
+                horizon_seconds=3600,
+                metadata={"reason": "sma_crossover_up"},
+            )
+        elif sma_fast < sma_slow:
+            return ctx.signal(
+                direction=SignalDirection.SHORT,
+                confidence=0.6,
+                stop_loss_bps=150.0,
+                take_profit_bps=300.0,
+                horizon_seconds=3600,
+                metadata={"reason": "sma_crossover_down"},
+            )
+        return None
+'''
+
+
+if __name__ == "__main__":
+    mcp.run()
