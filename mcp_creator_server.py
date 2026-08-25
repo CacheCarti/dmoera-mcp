@@ -42,7 +42,11 @@ from mcp.server.fastmcp import FastMCP
 
 # ── Configuration ────────────────────────────────────────
 API_URL = os.environ.get("DMOERA_API_URL", "http://localhost:8000").rstrip("/")
-API_KEY = os.environ.get("DMOERA_API_KEY", "")
+# API_KEY is read from env var at startup (for stdio mode) OR from the
+# DMOERA_API_KEY HTTP header on each request (for hosted/Smithery mode).
+# _get_api_key() checks both, with the header taking precedence.
+_API_KEY_ENV = os.environ.get("DMOERA_API_KEY", "")
+_API_KEY_HEADER = None  # Set by middleware on each HTTP request
 
 mcp = FastMCP(
     "dmoera-creator",
@@ -57,13 +61,21 @@ mcp = FastMCP(
 )
 
 
+def _get_api_key() -> str:
+    """Get the API key from the HTTP header (hosted mode) or env var (stdio mode)."""
+    if _API_KEY_HEADER:
+        return _API_KEY_HEADER
+    return _API_KEY_ENV
+
+
 # ── HTTP helper ──────────────────────────────────────────
 def _api_get(path: str) -> dict:
     """Make a GET request to the dMoERA API."""
     url = f"{API_URL}{path}"
     req = urllib.request.Request(url)
-    if API_KEY:
-        req.add_header("Authorization", f"Bearer {API_KEY}")
+    key = _get_api_key()
+    if key:
+        req.add_header("Authorization", f"Bearer {key}")
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -82,8 +94,9 @@ def _api_post(path: str, body: dict) -> dict:
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
-    if API_KEY:
-        req.add_header("Authorization", f"Bearer {API_KEY}")
+    key = _get_api_key()
+    if key:
+        req.add_header("Authorization", f"Bearer {key}")
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -893,6 +906,20 @@ if __name__ == "__main__":
             "http://127.0.0.1:*",
             "http://localhost:*",
         ]
+        # Add middleware to read DMOERA_API_KEY from the HTTP header on each
+        # request (Smithery and other hosted clients pass it as a header).
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        class ApiKeyHeaderMiddleware(BaseHTTPMiddleware):
+            async def dispatch(self, request, call_next):
+                global _API_KEY_HEADER
+                key = request.headers.get("DMOERA_API_KEY")
+                if key:
+                    _API_KEY_HEADER = key
+                return await call_next(request)
+
+        # FastMCP exposes the underlying Starlette app via the streamable_http_app
+        mcp.streamable_http_app().add_middleware(ApiKeyHeaderMiddleware)
         mcp.run(transport="streamable-http")
     else:
         mcp.run()
