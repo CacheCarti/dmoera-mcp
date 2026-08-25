@@ -50,7 +50,8 @@ mcp = FastMCP(
         "dMoERA Creator Studio — build, test, and deploy crypto trading strategies. "
         "Available tools: list_domains, list_bots, get_bot_profile, get_feature_catalog, "
         "get_market_regime, get_current_prices, sandbox_backtest, submit_strategy, "
-        "list_strategies, get_strategy_report, get_marketplace_bots, get_tournament_status. "
+        "list_strategies, get_strategy_report, get_marketplace_bots, get_tournament_status, "
+        "open_source_strategy, fork_strategy, get_open_source_leaderboard, delist_strategy. "
         "Read the creator-api-docs resource for the full strategy contract and examples."
     ),
 )
@@ -401,6 +402,106 @@ def get_tournament_status() -> str:
     return json.dumps(result, indent=2, default=str)
 
 
+@mcp.tool()
+def open_source_strategy(strategy_id: int) -> str:
+    """Convert a rejected strategy to open-source status.
+
+    The strategy must have passed stages 1-2 (static check + in-sample with
+    >=5 trades). Its code becomes public on the open-source leaderboard where
+    other creators can fork it. Open-source bots cannot enter tournaments or
+    receive fund allocations — they're for community learning.
+
+    Use this when a strategy fails full validation but still has educational
+    value or interesting logic worth sharing.
+
+    Args:
+        strategy_id: The ID of the strategy to open-source (from submit_strategy
+                     or list_strategies).
+
+    Returns JSON with: success, strategy_id, status, bot_id, or error.
+    """
+    result = _api_post(f"/api/creator/strategies/{strategy_id}/open-source", {})
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def fork_strategy(strategy_id: int) -> str:
+    """Get the source code from an open-source strategy for forking.
+
+    Returns the full code + parent info. Use this to study and remix
+    open-source strategies from the open-source leaderboard. The actual
+    submission of the forked code goes through submit_strategy with
+    parent_strategy_id set (which the backend uses to exclude the parent
+    from similarity checks).
+
+    Args:
+        strategy_id: The ID of the open-source strategy to fork.
+
+    Returns JSON with: success, parent_strategy_id, parent_bot_id,
+    parent_name, parent_domain, code.
+    """
+    result = _api_post(f"/api/creator/strategies/{strategy_id}/fork", {})
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def get_open_source_leaderboard(
+    sort_by: str = "overall",
+    domain: str = "",
+    limit: int = 20,
+) -> str:
+    """Browse the open-source strategy leaderboard with FIFA-style ratings.
+
+    Each strategy gets an overall rating (0-99) with sub-ratings for edge,
+    drawdown control, regime fit, risk, turnover, and robustness. Strategies
+    are tagged with positions (GK, DEF, MID, FWD) and tier (Bronze, Silver,
+    Gold, Elite) like FIFA Ultimate Team cards.
+
+    Use this to discover strategies worth forking. Then call fork_strategy
+    with the strategy_id to get the code.
+
+    Args:
+        sort_by: Sort key — overall | edge | dd_ctrl | regime | risk |
+                 turnover | robust | forks | likes | return | sharpe |
+                 trades | newest
+        domain: Filter by domain (e.g. "eth_usdc"). Empty = all domains.
+        limit: Max entries to return.
+
+    Returns JSON with: success, count, and bot entries with ratings,
+    validation metrics, creator_username, fork_count, like_count.
+    """
+    params = f"sort_by={sort_by}&limit={limit}"
+    if domain:
+        params += f"&domain={domain}"
+    result = _api_get(f"/api/open-source/leaderboard?{params}")
+    # Trim the entries to the requested limit
+    if isinstance(result, dict) and "bots" in result:
+        result["bots"] = result["bots"][:limit]
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+def delist_strategy(strategy_id: int, tombstone: bool = False) -> str:
+    """Delist a strategy from the platform.
+
+    Retired bots (tombstone=False) stay visible with their performance history
+    — bad performance can't be hidden. Tombstoned bots (tombstone=True) are
+    permanently removed and cannot be re-submitted.
+
+    Args:
+        strategy_id: The ID of the strategy to delist.
+        tombstone: If True, permanently remove (cannot re-submit). If False,
+                   just retire (can re-submit with improvements).
+
+    Returns JSON with: success, strategy_id, status.
+    """
+    result = _api_post(
+        f"/api/creator/strategies/{strategy_id}/delist",
+        {"tombstone": tombstone},
+    )
+    return json.dumps(result, indent=2, default=str)
+
+
 # ── Resources (read-only context) ────────────────────────
 
 @mcp.resource("creator-api://docs")
@@ -684,6 +785,25 @@ class BookImbalanceStrategy(Strategy):
 
 3-day rounds. Bots qualify on their own performance (rolling Sharpe, return, consistency).
 Top 3 per domain win USDT from the reward pool. No user following needed to qualify.
+
+## Open Source
+
+If a strategy fails full validation but passes stages 1-2 (static check + in-sample
+with >=5 trades), you can open-source it with `open_source_strategy`. The code becomes
+public on the open-source leaderboard (FIFA-style ratings, fork counts, likes).
+
+Browse open-source strategies with `get_open_source_leaderboard`, then call
+`fork_strategy` to get the code and remix it. Forked strategies are submitted via
+`submit_strategy` — the parent is excluded from similarity checks automatically.
+
+## Bot ID Naming
+
+Bot IDs follow the pattern: `u_{{creator_id}}_{{domain_slug}}_{{strategy_name_slug}}`
+(e.g. `u_3_eth_usdc_momentum_reversal`). The creator's username is attached to the
+bot in the leaderboard (not the bot_id itself). Two different creators CAN submit
+strategies with the same name — they get different bot_ids. The same creator
+submitting the same name again creates a new VERSION of the existing strategy
+(not a duplicate).
 
 ## Authentication
 
