@@ -880,8 +880,19 @@ if __name__ == "__main__":
         mcp.settings.port = port
         mcp.settings.host = host
         # Allow external hosts through the DNS rebinding protection
-        mcp.settings.transport_security.allowed_hosts = ["*"]
-        mcp.settings.transport_security.allowed_origins = ["*"]
+        mcp.settings.transport_security.allowed_hosts = [
+            "dmoera.xyz",
+            "dmoera.xyz:*",
+            "127.0.0.1:*",
+            "localhost:*",
+            "[::1]:*",
+        ]
+        mcp.settings.transport_security.allowed_origins = [
+            "https://dmoera.xyz",
+            "https://www.dmoera.xyz",
+            "http://127.0.0.1:*",
+            "http://localhost:*",
+        ]
         mcp.run(transport="streamable-http")
     else:
         mcp.run()
