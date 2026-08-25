@@ -3,7 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Install the MCP SDK (only dependency)
-RUN pip install --no-cache-dir "mcp[cli]>=1.0.0"
+RUN pip install --no-cache-dir "mcp[cli]>=1.0.0,<2.0.0"
 
 # Copy the server
 COPY mcp_creator_server.py .
