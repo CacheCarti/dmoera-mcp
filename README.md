@@ -27,81 +27,39 @@ This is a thin API client — it talks to a running dMoERA backend via HTTP. No 
 ### Setup
 
 ```bash
-git clone https://github.com/dMoERA/dmoera-mcp.git
+git clone https://github.com/CacheCarti/dmoera-mcp.git
 cd dmoera-mcp
 pip install -r requirements.txt
 ```
 
-## Configuration
+## MCP Configuration
 
-Set the backend URL via environment variable:
-
-```bash
-# Default: http://localhost:8000
-export DMOERA_API_URL=https://api.dmoera.xyz
-
-# Optional: API key for authenticated endpoints (sandbox backtest, strategy submission)
-export DMOERA_API_KEY=your_api_key_here
-```
-
-### Claude Desktop
-
-Add to `claude_desktop_config.json`:
+Add this standard MCP configuration to Claude Desktop, Cursor, Windsurf, or another MCP client:
 
 ```json
 {
   "mcpServers": {
     "dmoera-creator": {
       "command": "python",
-      "args": ["mcp_creator_server.py"],
-      "cwd": "/path/to/dmoera-mcp",
+      "args": ["/absolute/path/to/dmoera-mcp/mcp_creator_server.py"],
       "env": {
-        "DMOERA_API_URL": "https://api.dmoera.xyz"
+        "DMOERA_API_URL": "https://dmoera.xyz",
+        "DMOERA_API_KEY": "your_optional_personal_access_token"
       }
     }
   }
 }
 ```
 
-### Cursor
+The API key is optional for public market data and discovery tools. Create a Personal Access Token at [dmoera.xyz](https://dmoera.xyz) under **Settings → API Keys** to backtest, submit, fork, open-source, or delist strategies. Never commit your token.
 
-Add to `.cursor/mcp.json`:
+Remote clients can connect through the Streamable HTTP endpoint:
 
-```json
-{
-  "mcpServers": {
-    "dmoera-creator": {
-      "command": "python",
-      "args": ["mcp_creator_server.py"],
-      "cwd": "/path/to/dmoera-mcp",
-      "env": {
-        "DMOERA_API_URL": "https://api.dmoera.xyz"
-      }
-    }
-  }
-}
+```text
+https://dmoera.xyz/mcp
 ```
 
-### Windsurf
-
-Add to `.codeium/windsurf/mcp_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "dmoera-creator": {
-      "command": "python",
-      "args": ["mcp_creator_server.py"],
-      "cwd": "/path/to/dmoera-mcp",
-      "env": {
-        "DMOERA_API_URL": "https://api.dmoera.xyz"
-      }
-    }
-  }
-}
-```
-
-## Available Tools
+## Tools
 
 | Tool | Description | Auth Required |
 |------|-------------|---------------|
@@ -117,6 +75,10 @@ Add to `.codeium/windsurf/mcp_config.json`:
 | `get_strategy_report` | Get a detailed report card for a strategy | No |
 | `get_marketplace_bots` | List bots published to the marketplace | No |
 | `get_tournament_status` | Get current tournament round status and leaderboard | No |
+| `open_source_strategy` | Publish an eligible rejected strategy to the open-source leaderboard | Yes |
+| `fork_strategy` | Retrieve and fork an open-source strategy | Yes |
+| `get_open_source_leaderboard` | Browse open-source strategies with FIFA-style ratings | No |
+| `delist_strategy` | Retire or permanently delist one of your strategies | Yes |
 
 ## Resources
 
@@ -143,12 +105,30 @@ Strategies subclass `Strategy` and implement `on_bar(self, ctx) -> Signal`. See 
 
 ```python
 class MyStrategy(Strategy):
+    METADATA = {
+        "name": "SMA Crossover",
+        "domain": "eth_usdc",
+        "declared_sl_bps": 150.0,
+        "declared_tp_bps": 300.0,
+        "declared_hold_seconds": 3600,
+        "warmup_bars": 20,
+        "required_features": [],
+    }
+
     def on_bar(self, ctx):
-        rsi = ctx.rsi(14)
-        if rsi < 30:
-            return ctx.signal(direction=SignalDirection.LONG, confidence=0.7)
-        elif rsi > 70:
-            return ctx.signal(direction=SignalDirection.SHORT, confidence=0.7)
+        closes = ctx.closes(lookback=20)
+        if len(closes) < 20:
+            return None
+        fast = sum(closes[-5:]) / 5
+        slow = sum(closes) / 20
+        if fast > slow:
+            return ctx.signal(
+                direction=SignalDirection.LONG,
+                confidence=0.7,
+                stop_loss_bps=150.0,
+                take_profit_bps=300.0,
+                horizon_seconds=3600,
+            )
         return None
 ```
 
@@ -164,7 +144,7 @@ Top 3 per domain win USDT from the reward pool. **No user following needed to qu
 ## Links
 
 - **Platform**: [dmoera.xyz](https://dmoera.xyz)
-- **GitHub**: [github.com/dMoERA/dmoera-mcp](https://github.com/dMoERA/dmoera-mcp)
+- **GitHub**: [github.com/CacheCarti/dmoera-mcp](https://github.com/CacheCarti/dmoera-mcp)
 - **Twitter**: [@dMoERAHQ](https://x.com/dMoERAHQ)
 - **Discord**: [discord.gg/gXWDjDdQv](https://discord.gg/gXWDjDdQv)
 
