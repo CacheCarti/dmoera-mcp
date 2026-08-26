@@ -1,0 +1,37 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.CacheCarti/dmoera-creator",
+  "title": "dMoERA Creator",
+  "description": "Build, backtest, and deploy crypto trading strategies via MCP with 7-stage validation.",
+  "repository": {
+    "url": "https://github.com/CacheCarti/dmoera-mcp",
+    "source": "github",
+    "id": "dmoera-mcp"
+  },
+  "version": "1.0.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://dmoera.xyz/mcp"
+    }
+  ],
+  "tools": [
+    { "name": "list_domains", "description": "List all available trading domains" },
+    { "name": "list_bots", "description": "List trading bots ranked by performance" },
+    { "name": "get_bot_profile", "description": "Get detailed profile and performance stats for a bot" },
+    { "name": "get_feature_catalog", "description": "List all data feeds available to strategies" },
+    { "name": "get_market_regime", "description": "Get current market regime classification" },
+    { "name": "get_current_prices", "description": "Get current live prices for all tracked symbols" },
+    { "name": "sandbox_backtest", "description": "Backtest strategy code in a sandboxed environment" },
+    { "name": "submit_strategy", "description": "Submit a strategy for full validation and live deployment" },
+    { "name": "list_strategies", "description": "List all strategies created by a user" },
+    { "name": "get_strategy_report", "description": "Get a detailed report card for a strategy" },
+    { "name": "get_marketplace_bots", "description": "List bots published to the marketplace" },
+    { "name": "get_tournament_status", "description": "Get current tournament round status and leaderboard" },
+    { "name": "open_source_strategy", "description": "Publish a rejected strategy to the open-source leaderboard" },
+    { "name": "fork_strategy", "description": "Retrieve and fork an open-source strategy" },
+    { "name": "get_open_source_leaderboard", "description": "Browse open-source strategies with FIFA-style ratings" },
+    { "name": "delist_strategy", "description": "Retire or permanently delist a strategy" }
+  ],
+  "license": "MIT"
+}
