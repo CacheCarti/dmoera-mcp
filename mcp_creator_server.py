@@ -1,5 +1,5 @@
 """
-dMoERA Creator Studio — MCP Server (API Client Edition)
+dMoERA Creator Studio — MCP Server
 
 Exposes the dMoERA Creator API as Model Context Protocol tools so any
 AI agent (Claude, Cursor, Windsurf, Devin, Copilot, etc.) can:
@@ -9,12 +9,10 @@ AI agent (Claude, Cursor, Windsurf, Devin, Copilot, etc.) can:
   - Submit strategies for full validation and live deployment
   - Read market regime and feature data for strategy logic
 
-This is a thin API client — it talks to a running dMoERA backend
-via HTTP. No internal dMoERA code is imported or included.
-
-Configuration:
-  Set DMOERA_API_URL environment variable (default: http://localhost:8000)
-  Set DMOERA_API_KEY environment variable for authenticated endpoints (optional)
+This is AI-agnostic: any MCP-compatible client can connect and use it.
+No dMoERA-specific knowledge is required by the client — the tool
+descriptions and the companion CREATOR_API.md document provide all
+necessary context.
 
 Run standalone:
     python mcp_creator_server.py
@@ -25,122 +23,93 @@ Or configure in your AI client's MCP settings:
         "dmoera-creator": {
           "command": "python",
           "args": ["mcp_creator_server.py"],
-          "env": {
-            "DMOERA_API_URL": "https://api.dmoera.xyz"
-          }
+          "cwd": "/path/to/dmoen-core"
         }
       }
     }
 """
 import os
+import sys
 import json
-import urllib.request
-import urllib.error
-from typing import Optional
+import asyncio
+from typing import Optional, List, Dict, Any
+
+# Ensure we can import dMoERA modules when run from the repo root
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.fastmcp import FastMCP
-
-# ── Configuration ────────────────────────────────────────
-API_URL = os.environ.get("DMOERA_API_URL", "http://localhost:8000").rstrip("/")
-# API_KEY is read from env var at startup (for stdio mode) OR from the
-# DMOERA_API_KEY HTTP header on each request (for hosted/Smithery mode).
-# _get_api_key() checks both, with the header taking precedence.
-import contextvars
-_API_KEY_ENV = os.environ.get("DMOERA_API_KEY", "")
-_API_KEY_CTX = contextvars.ContextVar("api_key_header", default="")
 
 mcp = FastMCP(
     "dmoera-creator",
     instructions=(
-        "dMoERA Creator Studio — build, test, and deploy crypto trading strategies. "
-        "Available tools: list_domains, list_bots, get_bot_profile, get_feature_catalog, "
-        "get_market_regime, get_current_prices, sandbox_backtest, submit_strategy, "
-        "list_strategies, get_strategy_report, get_marketplace_bots, get_tournament_status, "
-        "open_source_strategy, fork_strategy, get_open_source_leaderboard, delist_strategy. "
-        "Read the creator-api-docs resource for the full strategy contract and examples."
+        "dMoERA Creator Studio — build, test, deploy, and manage crypto trading strategies and funds. "
+        "Creator tools: list_domains, list_bots, get_bot_profile, get_feature_catalog, "
+        "get_market_regime, get_current_prices, sandbox_backtest, submit_strategy, list_strategies, "
+        "get_strategy_report, get_marketplace_bots, get_tournament_status. "
+        "Fund management tools: list_funds, get_fund, get_active_fund, create_fund, "
+        "add_bot_to_fund, remove_bot_from_fund, swap_bot_in_fund, update_fund_weights, "
+        "update_fund_caps, activate_fund, deactivate_fund, close_fund, estimate_swap_cost, "
+        "browse_fund_marketplace. "
+        "Read CREATOR_API.md for the full strategy contract, data model, and examples."
     ),
 )
 
 
-def _resolve_api_key(explicit_key: str = "") -> str:
-    """Resolve the API key: explicit param > HTTP header > env var."""
-    if explicit_key:
-        return explicit_key
-    header_key = _API_KEY_CTX.get()
-    if header_key:
-        return header_key
-    return _API_KEY_ENV
+# ── Helpers ──────────────────────────────────────────────
 
-
-# ── HTTP helper ──────────────────────────────────────────
-def _api_get(path: str, api_key: str = "") -> dict:
-    """Make a GET request to the dMoERA API."""
-    url = f"{API_URL}{path}"
-    req = urllib.request.Request(url)
-    key = _resolve_api_key(api_key)
-    if key:
-        req.add_header("Authorization", f"Bearer {key}")
+def _get_engine():
+    """Get the running engine instance (if available)."""
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        return {"error": f"HTTP {e.code}: {body[:500]}"}
-    except urllib.error.URLError as e:
-        return {"error": f"Connection failed: {e.reason}. Is the dMoERA backend running at {API_URL}?"}
-    except Exception as e:
-        return {"error": str(e)}
+        import engine_pro
+        return getattr(engine_pro, "engine", None)
+    except Exception:
+        return None
 
 
-def _api_post(path: str, body: dict, api_key: str = "") -> dict:
-    """Make a POST request to the dMoERA API."""
-    url = f"{API_URL}{path}"
-    data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(url, data=data, method="POST")
-    req.add_header("Content-Type", "application/json")
-    key = _resolve_api_key(api_key)
-    if key:
-        req.add_header("Authorization", f"Bearer {key}")
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        raw = e.read().decode("utf-8", errors="replace")
-        try:
-            return json.loads(raw)
-        except Exception:
-            return {"error": f"HTTP {e.code}: {raw[:500]}"}
-    except urllib.error.URLError as e:
-        return {"error": f"Connection failed: {e.reason}. Is the dMoERA backend running at {API_URL}?"}
-    except Exception as e:
-        return {"error": str(e)}
+def _get_creator_service():
+    """Get a CreatorService instance."""
+    from validation.upload_service import CreatorService
+    return CreatorService()
+
+
+def _get_marketplace_manager():
+    """Get the marketplace manager."""
+    from marketplace.manager import MarketplaceManager
+    return MarketplaceManager()
+
+
+def _get_tournament_manager():
+    """Get the tournament manager."""
+    from tournaments.manager import TournamentManager
+    return TournamentManager()
 
 
 # ── Discovery Tools ──────────────────────────────────────
-
-# Static domain list — this is public information, not internal code
-_DOMAINS = [
-    {"key": "eth_usdc", "name": "ETH/USDC Swing", "type": "swing", "base_asset": "ETH", "quote_asset": "USDC", "grading_seconds": 3600, "feed_symbols": ["ETHUSDT"]},
-    {"key": "btc_usdc", "name": "BTC/USDC Swing", "type": "swing", "base_asset": "BTC", "quote_asset": "USDC", "grading_seconds": 3600, "feed_symbols": ["BTCUSDT"]},
-    {"key": "sol_usdc", "name": "SOL/USDC Swing", "type": "swing", "base_asset": "SOL", "quote_asset": "USDC", "grading_seconds": 3600, "feed_symbols": ["SOLUSDT"]},
-    {"key": "eth_usdc_scalp", "name": "ETH/USDC Scalp", "type": "scalp", "base_asset": "ETH", "quote_asset": "USDC", "grading_seconds": 300, "feed_symbols": ["ETHUSDT"]},
-    {"key": "btc_usdc_scalp", "name": "BTC/USDC Scalp", "type": "scalp", "base_asset": "BTC", "quote_asset": "USDC", "grading_seconds": 300, "feed_symbols": ["BTCUSDT"]},
-    {"key": "sol_usdc_scalp", "name": "SOL/USDC Scalp", "type": "scalp", "base_asset": "SOL", "quote_asset": "USDC", "grading_seconds": 300, "feed_symbols": ["SOLUSDT"]},
-]
-
 
 @mcp.tool()
 def list_domains() -> str:
     """List all available trading domains on dMoERA.
 
     Domains define what asset pair a strategy trades, what time horizon
-    it uses (scalp=5m, swing=1h), and what data is available.
+    it uses (scalp=5m, swing=1h, crisis=2m), and what data is available.
     Strategies must declare which domain they belong to.
 
     Returns a JSON array of domain objects with: key, name, type,
     base_asset, quote_asset, grading_seconds, and feed_symbols.
     """
-    return json.dumps(_DOMAINS, indent=2)
+    from domains.registry import get_all_domains
+    domains = []
+    for d in get_all_domains():
+        domains.append({
+            "key": d.key,
+            "name": d.name,
+            "type": d.domain_type.value if hasattr(d.domain_type, "value") else str(d.domain_type),
+            "base_asset": d.base_asset,
+            "quote_asset": d.quote_asset,
+            "grading_seconds": d.grading_seconds,
+            "feed_symbols": d.feed_symbols,
+        })
+    return json.dumps(domains, indent=2)
 
 
 @mcp.tool()
@@ -155,27 +124,34 @@ def list_bots(domain: Optional[str] = None, limit: int = 20) -> str:
     Returns JSON array of bots with: bot_id, domain, strategy_name, sharpe,
     win_rate, total_trades, return_bps, and validation_score.
     """
-    data = _api_get("/api/leaderboard")
-    if "error" in data:
-        return json.dumps(data, indent=2)
-
+    eng = _get_engine()
+    if not eng:
+        return json.dumps({"error": "Engine not running. Start the dMoERA engine first."})
+    limit = max(1, min(limit, 100))
+    if domain:
+        ranked = eng.leaderboard.get_ranked(domain)
+    else:
+        # Aggregate across all domains
+        ranked = []
+        from domains.registry import get_all_domains
+        for d in get_all_domains():
+            ranked.extend(eng.leaderboard.get_ranked(d.key)[:limit])
+        # Sort by validation_score as proxy
+        ranked.sort(key=lambda b: getattr(b, "validation_score", 0), reverse=True)
+        ranked = ranked[:limit]
     bots = []
-    for d in data.get("domains", []):
-        d_key = d.get("domain_key", d.get("key", ""))
-        if domain and d_key != domain:
-            continue
-        for b in d.get("bots", []):
-            bots.append({
-                "bot_id": b.get("bot_id", ""),
-                "domain": d_key,
-                "strategy_name": b.get("name", b.get("strategy_name", "unknown")),
-                "sharpe": round(b.get("sharpe", b.get("sharpe_proxy", 0)), 3),
-                "win_rate": round(b.get("win_rate", 0), 3),
-                "total_trades": b.get("total_trades", b.get("total_predictions", 0)),
-                "return_bps": round(b.get("return_bps", b.get("realized_return_bps", 0)), 1),
-                "validation_score": round(b.get("validation_score", b.get("score", 0)), 1),
-            })
-    bots = bots[:max(1, min(limit, 100))]
+    for b in ranked:
+        perf = b.performance
+        bots.append({
+            "bot_id": b.bot_id,
+            "domain": b.domain.key if hasattr(b.domain, "key") else str(b.domain),
+            "strategy_name": getattr(b, "strategy_name", "unknown"),
+            "sharpe": round(getattr(perf, "sharpe", 0), 3),
+            "win_rate": round(getattr(perf, "win_rate", 0), 3),
+            "total_trades": getattr(perf, "total_trades", 0),
+            "return_bps": round(getattr(perf, "total_return_bps", 0), 1),
+            "validation_score": round(getattr(b, "validation_score", 0), 1),
+        })
     return json.dumps(bots, indent=2)
 
 
@@ -187,31 +163,41 @@ def get_bot_profile(bot_id: str) -> str:
         bot_id: The bot identifier (e.g. "Eth_Full_Ensemble").
 
     Returns JSON with: bot_id, domain, strategy type, full performance
-    metrics (Sharpe, Sortino, Calmar, profit factor, win rate, return,
-    max drawdown, avg trade), and proven tier.
+    metrics (Sharpe, Sortino, Calmar, profit factor, regime breakdown),
+    current position if any, and recent trade history.
     """
-    data = _api_get(f"/api/strategy/{bot_id}/performance")
-    if "error" in data:
-        # Try the leaderboard and search for the bot
-        lb = _api_get("/api/leaderboard")
-        for d in lb.get("domains", []):
-            for b in d.get("bots", []):
-                if b.get("bot_id") == bot_id:
-                    return json.dumps({
-                        "bot_id": bot_id,
-                        "domain": d.get("domain_key", ""),
-                        "strategy_name": b.get("name", ""),
-                        "performance": {
-                            "sharpe": b.get("sharpe", b.get("sharpe_proxy", 0)),
-                            "win_rate": b.get("win_rate", 0),
-                            "total_trades": b.get("total_trades", b.get("total_predictions", 0)),
-                            "total_return_bps": b.get("return_bps", b.get("realized_return_bps", 0)),
-                            "max_drawdown_bps": b.get("max_drawdown_bps", 0),
-                        },
-                        "proven_tier": b.get("proven_tier", "unproven"),
-                    }, indent=2)
-        return json.dumps(data, indent=2)
-    return json.dumps(data, indent=2, default=str)
+    eng = _get_engine()
+    if not eng:
+        return json.dumps({"error": "Engine not running."})
+    bot = eng.bot_by_id.get(bot_id)
+    if not bot:
+        return json.dumps({"error": f"Bot '{bot_id}' not found"})
+    perf = bot.performance
+    profile = {
+        "bot_id": bot.bot_id,
+        "domain": bot.domain.key if hasattr(bot.domain, "key") else str(bot.domain),
+        "strategy_name": getattr(bot, "strategy_name", "unknown"),
+        "validation_score": getattr(bot, "validation_score", 0),
+        "performance": {
+            "sharpe": getattr(perf, "sharpe", 0),
+            "sortino": getattr(perf, "sortino", 0),
+            "calmar": getattr(perf, "calmar", 0),
+            "profit_factor": getattr(perf, "profit_factor", 0),
+            "win_rate": getattr(perf, "win_rate", 0),
+            "total_trades": getattr(perf, "total_trades", 0),
+            "total_return_bps": getattr(perf, "total_return_bps", 0),
+            "max_drawdown_bps": getattr(perf, "max_drawdown_bps", 0),
+            "avg_trade_bps": getattr(perf, "avg_trade_bps", 0),
+        },
+    }
+    # Add regime breakdown if available
+    regime_stats = getattr(perf, "regime_stats", {})
+    if regime_stats:
+        profile["regime_breakdown"] = {
+            k: {"trades": v.get("trades", 0), "avg_bps": v.get("avg_bps", 0)}
+            for k, v in regime_stats.items()
+        }
+    return json.dumps(profile, indent=2)
 
 
 @mcp.tool()
@@ -219,15 +205,28 @@ def get_feature_catalog() -> str:
     """List all data feeds available to strategies via ctx.features.
 
     Features are external data that strategies can read during on_bar().
-    Each feature has a status: "live" (available now) or "planned" (roadmap).
+    Each feature has a status: "live" (available now, requirable) or
+    "planned" (roadmap, not yet available). Only live features can be
+    used in required_features.
 
     Returns JSON array of features with: key, label, description, unit,
-    example, cadence, source, and status.
+    example, cadence, source, status, and backtest_mode.
     """
-    data = _api_get("/api/creator/features")
-    if "error" in data:
-        return json.dumps(data, indent=2)
-    return json.dumps(data.get("features", []), indent=2)
+    from features.catalog import FEATURE_CATALOG
+    features = []
+    for f in FEATURE_CATALOG:
+        features.append({
+            "key": f.key,
+            "label": f.label,
+            "description": f.description,
+            "unit": f.unit,
+            "example": f.example,
+            "cadence": f.cadence,
+            "source": f.source,
+            "status": f.status,
+            "backtest_mode": f.backtest_mode,
+        })
+    return json.dumps(features, indent=2)
 
 
 # ── Market Data Tools ────────────────────────────────────
@@ -238,39 +237,53 @@ def get_market_regime() -> str:
 
     Returns the aggregate regime (e.g. "bull_calm", "bear_volatile"),
     per-symbol regimes, crisis score, and the derivatives data driving
-    the classification (funding rates, open interest, long/short ratios).
+    the classification (funding rates, open interest, long/short ratios,
+    taker buy/sell ratios).
 
     Regime determines which trade directions are allowed:
-    - bull_* -> longs only
-    - bear_* -> shorts only
-    - neutral_* -> both longs and shorts
-    - crisis/meltdown -> no new positions
+    - bull_* → longs only
+    - bear_* → shorts only
+    - neutral_* → both longs and shorts
+    - crisis/meltdown → no new positions
     """
-    return json.dumps(_api_get("/api/regime"), indent=2, default=str)
+    eng = _get_engine()
+    if not eng:
+        return json.dumps({"error": "Engine not running."})
+    status = eng.get_regime_status()
+    # Remove non-serializable items
+    clean = {}
+    for k, v in status.items():
+        try:
+            json.dumps(v)
+            clean[k] = v
+        except (TypeError, ValueError):
+            clean[k] = str(v)
+    return json.dumps(clean, indent=2)
 
 
 @mcp.tool()
 def get_current_prices() -> str:
     """Get current live prices for all tracked symbols.
 
-    Returns JSON with symbol -> {price, change_24h_pct, volume_24h, source}
-    for ETHUSDT, BTCUSDT, SOLUSDT.
+    Returns JSON with symbol → {price, bid, ask, source, change_24h_pct,
+    volume_24h} for ETHUSDT, BTCUSDT, SOLUSDT from Binance/Coinbase/Kraken.
     """
-    data = _api_get("/api/state")
-    if "error" in data:
-        return json.dumps(data, indent=2)
-    # Extract market prices from the state payload
-    markets = data.get("markets", [])
+    eng = _get_engine()
+    if not eng:
+        return json.dumps({"error": "Engine not running."})
     prices = {}
-    for m in markets:
-        sym = m.get("symbol_key", m.get("symbol", ""))
-        if sym:
+    for sym, tick in eng.latest_prices.items():
+        if hasattr(tick, "price"):
             prices[sym] = {
-                "price": m.get("price", 0),
-                "change_24h_pct": m.get("change_24h_pct", 0),
-                "volume_24h": m.get("volume_24h", 0),
-                "source": m.get("source", ""),
+                "price": tick.price,
+                "bid": getattr(tick, "bid", 0),
+                "ask": getattr(tick, "ask", 0),
+                "source": tick.source,
+                "change_24h_pct": getattr(tick, "change_24h_pct", 0),
+                "volume_24h": getattr(tick, "volume_24h", 0),
             }
+        elif isinstance(tick, (int, float)):
+            prices[sym] = {"price": tick}
     return json.dumps(prices, indent=2)
 
 
@@ -280,34 +293,47 @@ def get_current_prices() -> str:
 def sandbox_backtest(
     code: str,
     domain: str = "eth_usdc",
+    symbol: str = "ETHUSDT",
     user_id: str = "mcp_sandbox",
-    api_key: str = "",
 ) -> str:
     """Run a sandbox backtest of strategy code without persisting anything.
 
     This is the fastest way to test a strategy. The code is run through
     static checks and a full backtest on historical data, but no Strategy
-    rows are created. Use this for rapid iteration.
+    or StrategyVersion rows are created. Use this for rapid iteration.
 
     Args:
         code: Python source code implementing the Strategy contract.
               Must define a METADATA dict and a class extending Strategy
-              with an on_bar(ctx) -> Signal method. See the strategy template resource.
+              with an on_bar(ctx) -> Signal method. See CREATOR_API.md.
         domain: Trading domain (e.g. "eth_usdc", "btc_usdc", "sol_usdc").
-        user_id: Identifier for the creator (requires authentication for this endpoint).
-        api_key: Your dMoERA Personal Access Token. Required for this tool.
-                 Get one at https://dmoera.xyz → Settings → API Keys.
-                 (If running locally with DMOERA_API_KEY env var set, this can be omitted.)
+        symbol: Price symbol for historical data (e.g. "ETHUSDT").
+        user_id: Identifier for trial tracking (used for DSR correction).
 
     Returns JSON with: success, metrics (sharpe, sortino, win_rate,
-    total_trades, return_bps, max_drawdown, regime_breakdown),
-    or error details if validation failed.
+    total_trades, return_bps, max_drawdown, regime_breakdown,
+    exit_reason_breakdown), or error details if validation failed.
     """
-    result = _api_post("/api/creator/sandbox", {
-        "code": code,
-        "domain": domain,
-    }, api_key=api_key)
-    return json.dumps(result, indent=2, default=str)
+    try:
+        service = _get_creator_service()
+        # Fetch candles from the engine's historical data
+        eng = _get_engine()
+        candles = []
+        if eng:
+            hist = eng.price_history.get(symbol, [])
+            candles = [{"timestamp": h.get("timestamp"), "open": h.get("open", h.get("price")),
+                        "high": h.get("high", h.get("price")), "low": h.get("low", h.get("price")),
+                        "close": h.get("close", h.get("price")), "volume": h.get("volume", 0)}
+                       for h in hist]
+        if not candles:
+            return json.dumps({"error": f"No historical data available for {symbol}. Engine may not be running."})
+        result = service.sandbox_backtest(
+            code=code, candles=candles, symbol=symbol,
+            user_id=user_id, domain=domain,
+        )
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
 
 
 @mcp.tool()
@@ -317,7 +343,6 @@ def submit_strategy(
     code: str,
     user_id: str,
     symbol: str = "ETHUSDT",
-    api_key: str = "",
 ) -> str:
     """Submit a strategy for full validation and live deployment.
 
@@ -338,38 +363,49 @@ def submit_strategy(
         name: Human-readable strategy name (e.g. "ETH Momentum v2").
         domain: Trading domain key (e.g. "eth_usdc").
         code: Python source code implementing the Strategy contract.
-        user_id: The creator's user ID (authentication required).
-        symbol: Price symbol (auto-detected from domain if omitted).
-        api_key: Your dMoERA Personal Access Token. Required for this tool.
-                 Get one at https://dmoera.xyz → Settings → API Keys.
-                 (If running locally with DMOERA_API_KEY env var set, this can be omitted.)
+        user_id: The creator's user ID.
+        symbol: Price symbol for historical data.
 
     Returns JSON with: success, strategy_id, bot_id, validation results
     per stage, or error details.
     """
-    result = _api_post("/api/creator/strategies", {
-        "name": name,
-        "domain": domain,
-        "code": code,
-        "symbol": symbol,
-    }, api_key=api_key)
-    return json.dumps(result, indent=2, default=str)
+    try:
+        service = _get_creator_service()
+        eng = _get_engine()
+        candles = []
+        if eng:
+            hist = eng.price_history.get(symbol, [])
+            candles = [{"timestamp": h.get("timestamp"), "open": h.get("open", h.get("price")),
+                        "high": h.get("high", h.get("price")), "low": h.get("low", h.get("price")),
+                        "close": h.get("close", h.get("price")), "volume": h.get("volume", 0)}
+                       for h in hist]
+        if not candles:
+            return json.dumps({"error": f"No historical data available for {symbol}."})
+        result = service.submit(
+            user_id=user_id, name=name, domain=domain, code=code,
+            candles=candles, symbol=symbol,
+        )
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
 
 
 @mcp.tool()
-def list_strategies(user_id: str, api_key: str = "") -> str:
+def list_strategies(user_id: str) -> str:
     """List all strategies created by a user.
 
     Args:
-        user_id: The creator's user ID (authentication required).
-        api_key: Your dMoERA Personal Access Token. Required for this tool.
-                 Get one at https://dmoera.xyz → Settings → API Keys.
-                 (If running locally with DMOERA_API_KEY env var set, this can be omitted.)
+        user_id: The creator's user ID.
 
     Returns JSON array of strategies with: id, bot_id, name, domain,
-    status, and created_at.
+    status, declared_sl_bps, declared_tp_bps, and created_at.
     """
-    return json.dumps(_api_get("/api/creator/strategies", api_key=api_key), indent=2, default=str)
+    try:
+        service = _get_creator_service()
+        strategies = service.list_strategies(user_id)
+        return json.dumps(strategies, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
 
 
 @mcp.tool()
@@ -384,7 +420,14 @@ def get_strategy_report(strategy_id: int) -> str:
 
     Returns JSON with: strategy details, latest validation runs, metrics.
     """
-    return json.dumps(_api_get(f"/api/creator/report-card/{strategy_id}"), indent=2, default=str)
+    try:
+        service = _get_creator_service()
+        report = service.get_report_card(strategy_id)
+        if not report:
+            return json.dumps({"error": f"Strategy {strategy_id} not found"})
+        return json.dumps(report, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
 
 
 # ── Marketplace Tools ────────────────────────────────────
@@ -399,13 +442,15 @@ def get_marketplace_bots(domain: Optional[str] = None, sort: str = "rating", lim
         limit: Max results (default 20, max 100).
 
     Returns JSON array of marketplace listings with: listing_id, bot_id,
-    title, description, domain, creator, monthly_price_usd, stats
+    title, description, domain, creator, monthly_price_usd, cached stats
     (win_rate, return_bps, sharpe), subscriber_count, and avg_rating.
     """
-    params = f"?sort={sort}&limit={max(1, min(limit, 100))}"
-    if domain:
-        params += f"&domain={domain}"
-    return json.dumps(_api_get(f"/api/marketplace/bots{params}"), indent=2, default=str)
+    try:
+        mgr = _get_marketplace_manager()
+        listings = mgr.list_bots(domain=domain, sort=sort, limit=limit)
+        return json.dumps(listings, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
 
 
 # ── Tournament Tools ─────────────────────────────────────
@@ -415,461 +460,430 @@ def get_tournament_status() -> str:
     """Get current tournament round status and leaderboard.
 
     Tournaments run every 3 days. Top 3 bots per domain win prizes
-    from the reward pool. Scoring is based on the bot's own performance:
-    50% risk-adjusted (rolling Sharpe), 30% total return, 20% consistency.
+    from the reward pool. Scoring is weighted: 50% risk-adjusted return,
+    30% total PnL, 20% consistency.
 
     Returns JSON with: current round info (round_id, start/end time,
-    reward_pool_usd, total_participants, hours_remaining), and leaderboard entries.
+    reward_pool_usd, total_participants), and leaderboard entries.
     """
-    stats = _api_get("/api/tournament/stats")
-    leaderboard = _api_get("/api/tournament/leaderboard?limit=20")
-    result = {
-        "stats": stats,
-        "leaderboard": leaderboard.get("entries", []) if "error" not in leaderboard else [],
-    }
-    return json.dumps(result, indent=2, default=str)
+    try:
+        mgr = _get_tournament_manager()
+        round_info = mgr.get_or_create_current_round()
+        entries = mgr.get_leaderboard()
+        return json.dumps({
+            "current_round": {
+                "round_id": round_info.round_id,
+                "start_time": round_info.start_time.isoformat() if round_info.start_time else None,
+                "end_time": round_info.end_time.isoformat() if round_info.end_time else None,
+                "reward_pool_usd": round_info.reward_pool_usd,
+                "total_participants": round_info.total_participants,
+                "status": round_info.status,
+            },
+            "leaderboard": entries[:20] if entries else [],
+        }, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+# ── Fund Management Tools ────────────────────────────────
+
+def _get_fund_manager():
+    """Get a FundManager instance."""
+    from engine.fund_manager import FundManager
+    return FundManager()
 
 
 @mcp.tool()
-def open_source_strategy(strategy_id: int, api_key: str = "") -> str:
-    """Convert a rejected strategy to open-source status.
-
-    The strategy must have passed stages 1-2 (static check + in-sample with
-    >=5 trades). Its code becomes public on the open-source leaderboard where
-    other creators can fork it. Open-source bots cannot enter tournaments or
-    receive fund allocations — they're for community learning.
-
-    Use this when a strategy fails full validation but still has educational
-    value or interesting logic worth sharing.
+def list_funds(user_id: str) -> str:
+    """List all hedge funds for a user (active + closed).
 
     Args:
-        strategy_id: The ID of the strategy to open-source (from submit_strategy
-                     or list_strategies).
-        api_key: Your dMoERA Personal Access Token. Required for this tool.
-                 Get one at https://dmoera.xyz → Settings → API Keys.
-                 (If running locally with DMOERA_API_KEY env var set, this can be omitted.)
+        user_id: The user's ID.
 
-    Returns JSON with: success, strategy_id, status, bot_id, or error.
+    Returns a JSON array of fund objects with: id, fund_name, is_active,
+    inception_date, initial_capital, current_aum, router_preset,
+    aggression_mode, total_pnl_usd, total_pnl_bps, and roster summary.
     """
-    result = _api_post(f"/api/creator/strategies/{strategy_id}/open-source", {}, api_key=api_key)
-    return json.dumps(result, indent=2, default=str)
+    try:
+        fm = _get_fund_manager()
+        funds = fm.list_funds(user_id)
+        return json.dumps({"success": True, "funds": funds}, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
 
 
 @mcp.tool()
-def fork_strategy(strategy_id: int, api_key: str = "") -> str:
-    """Get the source code from an open-source strategy for forking.
-
-    Returns the full code + parent info. Use this to study and remix
-    open-source strategies from the open-source leaderboard. The actual
-    submission of the forked code goes through submit_strategy with
-    parent_strategy_id set (which the backend uses to exclude the parent
-    from similarity checks).
+def get_fund(fund_id: int) -> str:
+    """Get detailed info for a specific hedge fund, including its roster.
 
     Args:
-        strategy_id: The ID of the open-source strategy to fork.
-        api_key: Your dMoERA Personal Access Token. Required for this tool.
-                 Get one at https://dmoera.xyz → Settings → API Keys.
-                 (If running locally with DMOERA_API_KEY env var set, this can be omitted.)
+        fund_id: The fund's ID.
 
-    Returns JSON with: success, parent_strategy_id, parent_bot_id,
-    parent_name, parent_domain, code.
+    Returns a JSON object with fund details and active roster entries
+    (bot_id, bot_name, weight, domain, current_pnl).
     """
-    result = _api_post(f"/api/creator/strategies/{strategy_id}/fork", {}, api_key=api_key)
-    return json.dumps(result, indent=2, default=str)
+    try:
+        fm = _get_fund_manager()
+        fund = fm.get_fund(fund_id)
+        if not fund:
+            return json.dumps({"error": "Fund not found"}, indent=2)
+        return json.dumps({"success": True, "fund": fund}, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
 
 
 @mcp.tool()
-def get_open_source_leaderboard(
-    sort_by: str = "overall",
-    domain: str = "",
-    limit: int = 20,
+def get_active_fund(user_id: str) -> str:
+    """Get the user's currently active (Manager Mode) fund.
+
+    Args:
+        user_id: The user's ID.
+
+    Returns the active fund object or null if Manager Mode is not active.
+    """
+    try:
+        fm = _get_fund_manager()
+        fund = fm.get_active_fund(user_id)
+        return json.dumps({"success": True, "fund": fund}, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def create_fund(
+    user_id: str,
+    fund_name: str = "My Hedge Fund",
+    router_preset: str = "standard",
+    aggression_mode: str = "normal",
+    philosophy: str = "",
 ) -> str:
-    """Browse the open-source strategy leaderboard with FIFA-style ratings.
+    """Create a new hedge fund for the user.
 
-    Each strategy gets an overall rating (0-99) with sub-ratings for edge,
-    drawdown control, regime fit, risk, turnover, and robustness. Strategies
-    are tagged with positions (GK, DEF, MID, FWD) and tier (Bronze, Silver,
-    Gold, Elite) like FIFA Ultimate Team cards.
-
-    Use this to discover strategies worth forking. Then call fork_strategy
-    with the strategy_id to get the code.
+    The fund starts inactive — call activate_fund to start Manager Mode.
+    Initial capital is taken from the user's wallet_cash at creation time.
 
     Args:
-        sort_by: Sort key — overall | edge | dd_ctrl | regime | risk |
-                 turnover | robust | forks | likes | return | sharpe |
-                 trades | newest
-        domain: Filter by domain (e.g. "eth_usdc"). Empty = all domains.
-        limit: Max entries to return.
+        user_id: The user's ID.
+        fund_name: Display name for the fund.
+        router_preset: Risk profile — one of "prudent", "standard",
+                      "opportunistic", "unrestricted".
+        aggression_mode: "normal" or "yolo".
+        philosophy: Optional text describing the fund's investment thesis
+                   (max 2000 chars).
 
-    Returns JSON with: success, count, and bot entries with ratings,
-    validation metrics, creator_username, fork_count, like_count.
+    Returns the created fund object.
     """
-    params = f"sort_by={sort_by}&limit={limit}"
-    if domain:
-        params += f"&domain={domain}"
-    result = _api_get(f"/api/open-source/leaderboard?{params}")
-    # Trim the entries to the requested limit
-    if isinstance(result, dict) and "bots" in result:
-        result["bots"] = result["bots"][:limit]
-    return json.dumps(result, indent=2, default=str)
+    try:
+        fm = _get_fund_manager()
+        ok, fund, err = fm.create_fund(
+            user_id=user_id,
+            fund_name=fund_name,
+            router_preset=router_preset,
+            aggression_mode=aggression_mode,
+            philosophy=philosophy,
+        )
+        if not ok:
+            return json.dumps({"error": err}, indent=2)
+        return json.dumps({"success": True, "fund": fund}, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
 
 
 @mcp.tool()
-def delist_strategy(strategy_id: int, tombstone: bool = False, api_key: str = "") -> str:
-    """Delist a strategy from the platform.
-
-    Retired bots (tombstone=False) stay visible with their performance history
-    — bad performance can't be hidden. Tombstoned bots (tombstone=True) are
-    permanently removed and cannot be re-submitted.
+def add_bot_to_fund(user_id: str, fund_id: int, bot_id: str, bot_domain: str, weight: float = 20.0) -> str:
+    """Add a bot to a fund's roster.
 
     Args:
-        strategy_id: The ID of the strategy to delist.
-        tombstone: If True, permanently remove (cannot re-submit). If False,
-                   just retire (can re-submit with improvements).
-        api_key: Your dMoERA Personal Access Token. Required for this tool.
-                 Get one at https://dmoera.xyz → Settings → API Keys.
-                 (If running locally with DMOERA_API_KEY env var set, this can be omitted.)
+        user_id: The user's ID (must own the fund).
+        fund_id: The fund's ID.
+        bot_id: The bot to add (e.g. "momentum_eth_v3").
+        bot_domain: The bot's domain (e.g. "eth_usdc", "btc_usdc").
+        weight: Initial allocation weight in percent (default 20.0).
 
-    Returns JSON with: success, strategy_id, status.
+    Returns the updated roster entry.
     """
-    result = _api_post(
-        f"/api/creator/strategies/{strategy_id}/delist",
-        {"tombstone": tombstone},
-        api_key=api_key,
-    )
-    return json.dumps(result, indent=2, default=str)
+    try:
+        fm = _get_fund_manager()
+        ok, entry, err = fm.add_bot_to_roster(user_id, fund_id, bot_id, bot_domain, weight)
+        if not ok:
+            return json.dumps({"error": err}, indent=2)
+        return json.dumps({"success": True, "entry": entry}, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def remove_bot_from_fund(user_id: str, fund_id: int, bot_id: str, reason: str = "") -> str:
+    """Remove a bot from a fund's roster (triggers wind-down of its positions).
+
+    Args:
+        user_id: The user's ID (must own the fund).
+        fund_id: The fund's ID.
+        bot_id: The bot to remove.
+        reason: Optional reason for removal.
+
+    Returns success or error.
+    """
+    try:
+        fm = _get_fund_manager()
+        ok, err = fm.remove_bot_from_roster(user_id, fund_id, bot_id, reason)
+        if not ok:
+            return json.dumps({"error": err}, indent=2)
+        return json.dumps({"success": True}, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def swap_bot_in_fund(
+    user_id: str,
+    fund_id: int,
+    old_bot_id: str,
+    new_bot_id: str,
+    new_bot_domain: str,
+    weight: Optional[float] = None,
+    reason: str = "",
+) -> str:
+    """Swap one bot for another in a fund's roster.
+
+    Closes the old bot's positions and opens new ones for the replacement.
+    Incurs friction cost — use estimate_swap_cost first.
+
+    Args:
+        user_id: The user's ID (must own the fund).
+        fund_id: The fund's ID.
+        old_bot_id: The bot to remove.
+        new_bot_id: The bot to add in its place.
+        new_bot_domain: The new bot's domain (e.g. "eth_usdc").
+        weight: Allocation weight for the new bot (defaults to old bot's weight).
+        reason: Optional reason for the swap.
+
+    Returns the updated roster entry and friction estimate.
+    """
+    try:
+        fm = _get_fund_manager()
+        ok, result, err = fm.swap_bot(user_id, fund_id, old_bot_id, new_bot_id, new_bot_domain, weight, reason)
+        if not ok:
+            return json.dumps({"error": err}, indent=2)
+        return json.dumps({"success": True, "result": result}, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def update_fund_weights(user_id: str, fund_id: int, weights: Dict[str, float]) -> str:
+    """Update allocation weights for bots in a fund's roster.
+
+    Args:
+        user_id: The user's ID (must own the fund).
+        fund_id: The fund's ID.
+        weights: A dict mapping bot_id to new weight percentage (e.g.
+                {"momentum_eth_v3": 15.0, "scalper_btc_v2": 20.0}).
+
+    Returns success or error.
+    """
+    try:
+        fm = _get_fund_manager()
+        ok, err = fm.update_weights(user_id, fund_id, weights)
+        if not ok:
+            return json.dumps({"error": err}, indent=2)
+        return json.dumps({"success": True}, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def update_fund_caps(
+    user_id: str,
+    fund_id: int,
+    max_per_bot_pct: Optional[float] = None,
+    max_per_domain_pct: Optional[float] = None,
+    regime_veto_enabled: Optional[bool] = None,
+) -> str:
+    """Update a fund's risk caps and settings.
+
+    Args:
+        user_id: The user's ID (must own the fund).
+        fund_id: The fund's ID.
+        max_per_bot_pct: Max allocation per single bot (e.g. 40.0 = 40%).
+        max_per_domain_pct: Max allocation per domain (e.g. 60.0 = 60%).
+        regime_veto_enabled: Whether the regime detector can veto trades.
+
+    Only provided fields are updated; others remain unchanged.
+
+    Returns success or error.
+    """
+    try:
+        fm = _get_fund_manager()
+        ok, err = fm.update_caps(
+            user_id, fund_id,
+            max_per_bot_pct=max_per_bot_pct,
+            max_per_domain_pct=max_per_domain_pct,
+            regime_veto_enabled=regime_veto_enabled,
+        )
+        if not ok:
+            return json.dumps({"error": err}, indent=2)
+        return json.dumps({"success": True}, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def activate_fund(user_id: str, fund_id: int) -> str:
+    """Activate Manager Mode for a fund — starts the personal router.
+
+    This deploys capital across the fund's roster bots according to their
+    weights and the fund's risk caps. The main platform router is paused
+    while Manager Mode is active.
+
+    Args:
+        user_id: The user's ID (must own the fund).
+        fund_id: The fund's ID.
+
+    Returns success or error.
+    """
+    try:
+        fm = _get_fund_manager()
+        ok, err = fm.activate_manager_mode(user_id, fund_id)
+        if not ok:
+            return json.dumps({"error": err}, indent=2)
+        return json.dumps({"success": True, "message": "Manager Mode activated"}, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def deactivate_fund(user_id: str, fund_id: int) -> str:
+    """Deactivate Manager Mode — returns to the main platform router.
+
+    Closes all roster bot positions and returns capital to the wallet.
+
+    Args:
+        user_id: The user's ID (must own the fund).
+        fund_id: The fund's ID.
+
+    Returns success or error.
+    """
+    try:
+        fm = _get_fund_manager()
+        ok, err = fm.deactivate_manager_mode(user_id, fund_id)
+        if not ok:
+            return json.dumps({"error": err}, indent=2)
+        return json.dumps({"success": True, "message": "Manager Mode deactivated"}, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def close_fund(user_id: str, fund_id: int) -> str:
+    """Permanently close a hedge fund. Returns all capital to the wallet.
+
+    This is irreversible. The fund's performance record is preserved for
+    reporting and copy-trader settlement.
+
+    Args:
+        user_id: The user's ID (must own the fund).
+        fund_id: The fund's ID.
+
+    Returns success or error.
+    """
+    try:
+        fm = _get_fund_manager()
+        ok, err = fm.close_fund(user_id, fund_id)
+        if not ok:
+            return json.dumps({"error": err}, indent=2)
+        return json.dumps({"success": True, "message": "Fund closed"}, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def estimate_swap_cost(fund_id: int, old_bot_id: str, new_bot_id: str, new_bot_domain: str) -> str:
+    """Estimate the friction cost (in bps) of swapping a bot in a fund.
+
+    Use this before calling swap_bot_in_fund to understand the cost of
+    winding down the old bot's positions and opening new ones.
+
+    Args:
+        fund_id: The fund's ID.
+        old_bot_id: The bot being considered for removal.
+        new_bot_id: The replacement bot.
+        new_bot_domain: The replacement bot's domain.
+
+    Returns the estimated friction in bps of fund AUM.
+    """
+    try:
+        fm = _get_fund_manager()
+        cost_bps = fm.estimate_swap_cost(fund_id, old_bot_id, new_bot_id, new_bot_domain)
+        return json.dumps({"success": True, "estimated_friction_bps": round(cost_bps, 2)}, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def browse_fund_marketplace(domain: Optional[str] = None, min_sharpe: Optional[float] = None) -> str:
+    """Browse bots available for adding to a fund roster.
+
+    Shows bots with their performance stats and available capacity.
+    Requires the trading engine to be running.
+
+    Args:
+        domain: Filter by domain (e.g. "eth_usdc").
+        min_sharpe: Minimum Sharpe ratio filter.
+
+    Returns a JSON array of marketplace bot entries.
+    """
+    try:
+        engine = _get_engine()
+        if not engine:
+            return json.dumps({"error": "Trading engine not available. Start the engine to browse bots."}, indent=2)
+        fm = _get_fund_manager()
+        filters = {}
+        if domain:
+            filters["domain"] = domain
+        if min_sharpe is not None:
+            filters["min_sharpe"] = min_sharpe
+        bots = fm.get_marketplace_bots(engine, filters=filters if filters else None)
+        return json.dumps({"success": True, "bots": bots[:20]}, indent=2, default=str)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
 
 
 # ── Resources (read-only context) ────────────────────────
 
 @mcp.resource("creator-api://docs")
 def creator_api_docs() -> str:
-    """The full creator API documentation for AI agents."""
-    # Try to fetch from the running backend, fall back to embedded summary
-    try:
-        data = _api_get("/api/creator/features")
-        features = data.get("features", []) if "error" not in data else []
-    except Exception:
-        features = []
-
-    # Build feature table with backtest mode info
-    if features:
-        feature_table = "| Key | Label | Backtest | Status |\n|-----|-------|----------|--------|\n"
-        for f in features:
-            bt = f.get("backtest_mode", "unknown")
-            bt_icon = {"real": "real history", "proxy": "estimated", "none": "live only"}.get(bt, bt)
-            feature_table += f"| `{f.get('key', '')}` | {f.get('label', '')} | {bt_icon} | {f.get('status', '')} |\n"
-    else:
-        feature_table = "Call get_feature_catalog for the full list."
-
-    return f"""# dMoERA Creator API — Strategy Contract
-
-## Strategy Structure
-
-Strategies subclass `Strategy` and implement `on_bar(self, ctx) -> Signal`.
-**METADATA must be a CLASS ATTRIBUTE inside the Strategy subclass**, not a
-module-level variable. If METADATA is at module level, validation will fail
-with "Missing required METADATA field: name".
-
-```python
-class MyStrategy(Strategy):
-    METADATA = {{
-        "name": "My Strategy",
-        "domain": "eth_usdc",           # eth_usdc, btc_usdc, sol_usdc, or _scalp variants
-        "declared_sl_bps": 150.0,       # Stop-loss: 1.5%
-        "declared_tp_bps": 300.0,       # Take-profit: 3.0%
-        "declared_hold_seconds": 3600,  # Max hold: 1 hour
-        "warmup_bars": 20,              # Bars needed before trading
-        "required_features": [],         # External data feeds (see below)
-    }}
-
-    def initialize(self, ctx) -> None:
-        pass
-
-    def on_bar(self, ctx):
-        closes = ctx.closes(lookback=20)
-        if len(closes) < 20:
-            return None
-        sma_fast = sum(closes[-5:]) / 5
-        sma_slow = sum(closes[-20:]) / 20
-        if sma_fast > sma_slow:
-            return ctx.signal(
-                direction=SignalDirection.LONG,
-                confidence=0.6,
-                stop_loss_bps=150.0,
-                take_profit_bps=300.0,
-                horizon_seconds=3600,
-            )
-        elif sma_fast < sma_slow:
-            return ctx.signal(
-                direction=SignalDirection.SHORT,
-                confidence=0.6,
-                stop_loss_bps=150.0,
-                take_profit_bps=300.0,
-                horizon_seconds=3600,
-            )
-        return None
-```
-
-## Available ctx methods
-
-- `ctx.closes(lookback=N)` — last N close prices (oldest first)
-- `ctx.opens(lookback=N)` — last N open prices
-- `ctx.highs(lookback=N)` — last N high prices
-- `ctx.lows(lookback=N)` — last N low prices
-- `ctx.volumes(lookback=N)` — last N volumes
-- `ctx.signal(direction, confidence, stop_loss_bps, take_profit_bps, horizon_seconds)` — return a signal
-- `ctx.features.get(key, default)` — external data feed value (see feature catalog)
-
-Note: There are no built-in indicator methods. Compute RSI, EMA, SMA, ATR etc.
-manually from `ctx.closes()` / `ctx.highs()` / `ctx.lows()`. Example:
-`ema = sum(closes[-period:]) / period` for a simple moving average.
-
-## SignalDirection
-
-- `SignalDirection.LONG` — buy/long position
-- `SignalDirection.SHORT` — sell/short position
-
-## Data Feeds (ctx.features)
-
-Strategies can read external data via `ctx.features.get(key, default)`. Each feed has a
-backtest mode that determines what validation feeds it:
-
-- **real** — true point-in-time history. Backtest scores are valid.
-- **proxy** — estimated from OHLCV data. Correlated with live but different distribution.
-  Prefer relative comparisons (percentile, sign, change) over absolute thresholds.
-- **none** — reads the default value during validation. Any branch on it is dead code
-  in backtest. Only useful for live-only logic.
-
-{feature_table}
-
-### Example: Funding Rate Mean Reversion
-
-```python
-class FundingFadeStrategy(Strategy):
-    \"\"\"Fade extreme funding rates — crowded longs tend to unwind.\"\"\"
-    METADATA = {{
-        "name": "Funding Fade",
-        "domain": "eth_usdc",
-        "declared_sl_bps": 200.0,
-        "declared_tp_bps": 400.0,
-        "declared_hold_seconds": 7200,
-        "warmup_bars": 20,
-        "required_features": ["funding_rate_ethusdt"],
-    }}
-
-    def on_bar(self, ctx):
-        fr = ctx.features.get("funding_rate_ethusdt", 0.0)
-        # Positive funding = longs pay shorts = crowded long
-        if fr > 0.0003:  # 0.03% per 8h = very crowded
-            return ctx.signal(
-                direction=SignalDirection.SHORT,
-                confidence=0.55,
-                stop_loss_bps=200.0,
-                take_profit_bps=400.0,
-                horizon_seconds=7200,
-                metadata={{"reason": "funding_crowded_long", "fr": fr}},
-            )
-        elif fr < -0.0003:  # crowded short
-            return ctx.signal(
-                direction=SignalDirection.LONG,
-                confidence=0.55,
-                stop_loss_bps=200.0,
-                take_profit_bps=400.0,
-                horizon_seconds=7200,
-                metadata={{"reason": "funding_crowded_short", "fr": fr}},
-            )
-        return None
-```
-
-### Example: Fear & Greed Contrarian
-
-```python
-class FngContrarianStrategy(Strategy):
-    \"\"\"Buy extreme fear, sell extreme greed.\"\"\"
-    METADATA = {{
-        "name": "FNG Contrarian",
-        "domain": "btc_usdc",
-        "declared_sl_bps": 150.0,
-        "declared_tp_bps": 300.0,
-        "declared_hold_seconds": 86400,
-        "warmup_bars": 10,
-        "required_features": ["fear_greed_index"],
-    }}
-
-    def on_bar(self, ctx):
-        fg = ctx.features.get("fear_greed_index", 50)
-        if fg < 25:  # Extreme Fear
-            return ctx.signal(
-                direction=SignalDirection.LONG,
-                confidence=0.6,
-                stop_loss_bps=150.0,
-                take_profit_bps=300.0,
-                horizon_seconds=86400,
-                metadata={{"reason": "extreme_fear", "fg": fg}},
-            )
-        elif fg > 75:  # Extreme Greed
-            return ctx.signal(
-                direction=SignalDirection.SHORT,
-                confidence=0.6,
-                stop_loss_bps=150.0,
-                take_profit_bps=300.0,
-                horizon_seconds=86400,
-                metadata={{"reason": "extreme_greed", "fg": fg}},
-            )
-        return None
-```
-
-### Example: Cross-Asset Relative Strength
-
-```python
-class RelStrengthStrategy(Strategy):
-    \"\"\"Long ETH when it's outperforming BTC.\"\"\"
-    METADATA = {{
-        "name": "ETH-BTC Relative Strength",
-        "domain": "eth_usdc",
-        "declared_sl_bps": 200.0,
-        "declared_tp_bps": 400.0,
-        "declared_hold_seconds": 3600,
-        "warmup_bars": 20,
-        "required_features": ["btc_return_pct", "eth_return_pct"],
-    }}
-
-    def on_bar(self, ctx):
-        btc_mom = ctx.features.get("btc_return_pct", 0.0)
-        eth_mom = ctx.features.get("eth_return_pct", 0.0)
-        spread = eth_mom - btc_mom
-        if spread > 1.0:  # ETH outperforming by >1%
-            return ctx.signal(
-                direction=SignalDirection.LONG,
-                confidence=0.55,
-                stop_loss_bps=200.0,
-                take_profit_bps=400.0,
-                horizon_seconds=3600,
-                metadata={{"reason": "eth_outperforming", "spread": spread}},
-            )
-        elif spread < -1.0:
-            return ctx.signal(
-                direction=SignalDirection.SHORT,
-                confidence=0.55,
-                stop_loss_bps=200.0,
-                take_profit_bps=400.0,
-                horizon_seconds=3600,
-                metadata={{"reason": "eth_underperforming", "spread": spread}},
-            )
-        return None
-```
-
-### Example: Order Book Imbalance (proxy — use relative comparisons)
-
-```python
-class BookImbalanceStrategy(Strategy):
-    \"\"\"Trade with order book pressure. NOTE: backtest uses an OHLCV proxy —
-    compare to recent range, not a fixed threshold.\"\"\"
-    METADATA = {{
-        "name": "Book Imbalance Signal",
-        "domain": "eth_usdc",
-        "declared_sl_bps": 100.0,
-        "declared_tp_bps": 200.0,
-        "declared_hold_seconds": 1800,
-        "warmup_bars": 50,
-        "required_features": ["book_imbalance_ethusdt"],
-    }}
-
-    def on_bar(self, ctx):
-        imb = ctx.features.get("book_imbalance_ethusdt", 0.0)
-        # Use sign and relative strength, not absolute thresholds
-        # (proxy values have different distribution than live)
-        if imb > 0.15:
-            return ctx.signal(
-                direction=SignalDirection.LONG,
-                confidence=0.5,
-                stop_loss_bps=100.0,
-                take_profit_bps=200.0,
-                horizon_seconds=1800,
-                metadata={{"reason": "buy_pressure", "imb": imb}},
-            )
-        elif imb < -0.15:
-            return ctx.signal(
-                direction=SignalDirection.SHORT,
-                confidence=0.5,
-                stop_loss_bps=100.0,
-                take_profit_bps=200.0,
-                horizon_seconds=1800,
-                metadata={{"reason": "sell_pressure", "imb": imb}},
-            )
-        return None
-```
-
-## Validation Stages
-
-1. static_check — banned imports, syntax, contract compliance
-2. in_sample — backtest on training data
-3. out_of_sample — test on unseen data (70/30 split)
-4. walk_forward — 8 rolling windows, each with fit + test
-5. randomized_start — different random start points
-6. perturbation — market stress test
-7. holdout — server-side reserved data (pass/fail only)
-
-## Available Features (live)
-
-{json.dumps(features, indent=2) if features else "Call get_feature_catalog for the full list."}
-
-## Domains
-
-{json.dumps(_DOMAINS, indent=2)}
-
-## Tournament
-
-3-day rounds. Bots qualify on their own performance (rolling Sharpe, return, consistency).
-Top 3 per domain win USDT from the reward pool. No user following needed to qualify.
-
-## Open Source
-
-If a strategy fails full validation but passes stages 1-2 (static check + in-sample
-with >=5 trades), you can open-source it with `open_source_strategy`. The code becomes
-public on the open-source leaderboard (FIFA-style ratings, fork counts, likes).
-
-Browse open-source strategies with `get_open_source_leaderboard`, then call
-`fork_strategy` to get the code and remix it. Forked strategies are submitted via
-`submit_strategy` — the parent is excluded from similarity checks automatically.
-
-## Bot ID Naming
-
-Bot IDs follow the pattern: `u_{{creator_id}}_{{domain_slug}}_{{strategy_name_slug}}`
-(e.g. `u_3_eth_usdc_momentum_reversal`). The creator's username is attached to the
-bot in the leaderboard (not the bot_id itself). Two different creators CAN submit
-strategies with the same name — they get different bot_ids. The same creator
-submitting the same name again creates a new VERSION of the existing strategy
-(not a duplicate).
-
-## Authentication
-
-To use sandbox_backtest and submit_strategy, set the DMOERA_API_KEY environment variable
-to a personal access token generated from your dMoERA account settings (Settings > API Keys).
-"""
+    """The full CREATOR_API.md documentation for AI agents."""
+    docs_path = os.path.join(os.path.dirname(__file__), "CREATOR_API.md")
+    if os.path.exists(docs_path):
+        with open(docs_path, "r", encoding="utf-8") as f:
+            return f.read()
+    return "CREATOR_API.md not found. See the repository root."
 
 
 @mcp.resource("creator-api://strategy-template")
 def strategy_template() -> str:
-    """A copy-pasteable strategy template implementing the contract."""
+    """A copy-pasteable strategy template implementing the v2 contract."""
     return '''"""
 Strategy: [Your Strategy Name]
 Domain: eth_usdc
 """
 
+from domains.strategy_contract import Strategy, Signal, SignalDirection
+
+METADATA = {
+    "name": "[Your Strategy Name]",
+    "domain": "eth_usdc",
+    "declared_sl_bps": 150.0,      # Stop-loss: 1.5%
+    "declared_tp_bps": 300.0,      # Take-profit: 3.0%
+    "declared_hold_seconds": 3600,  # Max hold: 1 hour
+    "warmup_bars": 20,             # Bars needed before trading
+    "required_features": [],        # External data feeds needed
+}
+
+
 class MyStrategy(Strategy):
     """Describe your strategy's edge here."""
-
-    METADATA = {
-        "name": "[Your Strategy Name]",
-        "domain": "eth_usdc",
-        "declared_sl_bps": 150.0,
-        "declared_tp_bps": 300.0,
-        "declared_hold_seconds": 3600,
-        "warmup_bars": 20,
-        "required_features": [],
-    }
 
     def initialize(self, ctx) -> None:
         """Called once before the first bar. Set up indicators."""
@@ -881,6 +895,7 @@ class MyStrategy(Strategy):
         if len(closes) < 20:
             return None
 
+        # Example: simple momentum
         sma_fast = sum(closes[-5:]) / 5
         sma_slow = sum(closes[-20:]) / 20
 
@@ -906,64 +921,7 @@ class MyStrategy(Strategy):
 '''
 
 
+# ── Entry point ──────────────────────────────────────────
+
 if __name__ == "__main__":
-    import sys
-    # Default to stdio (for local AI clients like Claude, Cursor, Windsurf).
-    # Use "python mcp_creator_server.py http" to run as a hosted HTTP server
-    # (for Smithery and other remote directories).
-    transport = sys.argv[1] if len(sys.argv) > 1 else "stdio"
-    if transport in ("http", "streamable-http"):
-        port = int(os.environ.get("MCP_PORT", "8787"))
-        host = os.environ.get("MCP_HOST", "0.0.0.0")
-        mcp.settings.port = port
-        mcp.settings.host = host
-        # Allow external hosts through the DNS rebinding protection
-        mcp.settings.transport_security.allowed_hosts = [
-            "dmoera.xyz",
-            "dmoera.xyz:*",
-            "127.0.0.1:*",
-            "localhost:*",
-            "[::1]:*",
-        ]
-        mcp.settings.transport_security.allowed_origins = [
-            "https://dmoera.xyz",
-            "https://www.dmoera.xyz",
-            "http://127.0.0.1:*",
-            "http://localhost:*",
-        ]
-        # Wrap the ASGI app to read DMOERA_API_KEY from the HTTP header on each
-        # request (Smithery and other hosted clients pass it as a header).
-        # We can't use mcp.run() because it creates a new app internally —
-        # instead we get the app, wrap it, and run uvicorn directly.
-        import uvicorn
-        import anyio
-
-        starlette_app = mcp.streamable_http_app()
-
-        # ASGI middleware wrapper — intercepts the raw ASGI scope to read headers
-        # before the MCP server processes the request.
-        class ApiKeyASGIMiddleware:
-            def __init__(self, app):
-                self.app = app
-
-            async def __call__(self, scope, receive, send):
-                if scope["type"] == "http":
-                    for name, value in scope.get("headers", []):
-                        if name == b"dmoera_api_key":
-                            key = value.decode("utf-8")
-                            _API_KEY_CTX.set(key)
-                            print(f"[MCP] API key from header: {key[:16]}...")
-                            break
-                await self.app(scope, receive, send)
-
-        app = ApiKeyASGIMiddleware(starlette_app)
-        config = uvicorn.Config(
-            app,
-            host=host,
-            port=port,
-            log_level=mcp.settings.log_level.lower(),
-        )
-        server = uvicorn.Server(config)
-        anyio.run(server.serve)
-    else:
-        mcp.run()
+    mcp.run(transport="stdio")
