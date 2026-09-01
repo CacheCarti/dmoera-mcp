@@ -52,6 +52,8 @@ mcp = FastMCP(
         "browse_fund_marketplace. "
         "Read CREATOR_API.md for the full strategy contract, data model, and examples."
     ),
+    host="0.0.0.0",
+    port=8787,
 )
 
 
