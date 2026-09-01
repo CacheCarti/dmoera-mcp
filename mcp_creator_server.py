@@ -927,6 +927,6 @@ if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == "http":
         # HTTP transport mode — serve over HTTP for remote clients
-        mcp.run(transport="streamable-http", host="0.0.0.0", port=8787)
+        mcp.run(transport="streamable-http")
     else:
         mcp.run(transport="stdio")
