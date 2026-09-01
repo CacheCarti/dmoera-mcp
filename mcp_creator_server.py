@@ -924,4 +924,9 @@ class MyStrategy(Strategy):
 # ── Entry point ──────────────────────────────────────────
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "http":
+        # HTTP transport mode — serve over HTTP for remote clients
+        mcp.run(transport="streamable-http", host="0.0.0.0", port=8787)
+    else:
+        mcp.run(transport="stdio")
