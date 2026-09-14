@@ -1,6 +1,6 @@
 # dMoERA Creator Studio — MCP Server
 
-[![smithery badge](https://smithery.ai/badge/mk9654/dMoERA-Creator)](https://smithery.ai/servers/mk9654/dMoERA-Creator)
+[![Smithery](https://img.shields.io/badge/Smithery-dMoERA_Creator-blue)](https://smithery.ai/servers/mk9654/dMoERA-Creator)
 
 ![dMoERA MCP Demo](demo.gif)
 
