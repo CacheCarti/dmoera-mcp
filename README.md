@@ -1,6 +1,6 @@
 # dMoERA Creator Studio — MCP Server
 
-[![smithery badge](https://smithery.ai/badge/mk9654/dMoERA-Creator)](https://smithery.ai/servers/mk9654/dMoERA-Creator)
+[![LightNow MCP capabilities](https://lightnow.ai/badge/io.github.CacheCarti/dmoera-creator)](https://lightnow.ai/servers/io.github.CacheCarti/dmoera-creator)
 
 ![dMoERA MCP Demo](demo.gif)
 
